@@ -18,6 +18,7 @@ package server
 
 import (
 	"crypto/tls"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,14 +32,18 @@ import (
 	"github.com/cockroachdb/replicator/internal/sequencer"
 	stagingProd "github.com/cockroachdb/replicator/internal/sinkprod"
 	"github.com/cockroachdb/replicator/internal/sinktest"
+	"github.com/cockroachdb/replicator/internal/sinktest/all"
 	"github.com/cockroachdb/replicator/internal/sinktest/base"
 	"github.com/cockroachdb/replicator/internal/source/cdc"
+	"github.com/cockroachdb/replicator/internal/types"
 	jwtAuth "github.com/cockroachdb/replicator/internal/util/auth/jwt"
 	"github.com/cockroachdb/replicator/internal/util/diag"
+	"github.com/cockroachdb/replicator/internal/util/hlc"
 	"github.com/cockroachdb/replicator/internal/util/ident"
 	"github.com/cockroachdb/replicator/internal/util/stdlogical"
 	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/cockroachdb/replicator/internal/util/stdserver"
+	"github.com/cockroachdb/replicator/internal/util/workload"
 	joonix "github.com/joonix/log"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
@@ -300,7 +305,7 @@ func testIntegration(t *testing.T, cfg testConfig) {
 
 	// Don't wait the entire 30s. This options was introduced in the
 	// same versions as webhooks.
-	if ok, err := supportsMinCheckpoint(sourceVersion); a.NoError(err) && ok {
+	if ok, err := sinktest.SupportsMinCheckpointFrequency(sourceVersion); a.NoError(err) && ok {
 		createStmt += ",min_checkpoint_frequency='1s'"
 	}
 	if cfg.queries {
@@ -394,14 +399,14 @@ func testIntegration(t *testing.T, cfg testConfig) {
 	})
 }
 
-// Necessary for faster resolved timestamps.
-func supportsMinCheckpoint(version string) (bool, error) {
-	return stdpool.CockroachMinVersion(version, "v22.1")
-}
-
 // While queries are supported in v22.2, they were in preview.
 func supportsQueries(version string) (bool, error) {
 	return stdpool.CockroachMinVersion(version, "v23.1")
+}
+
+// Union recursive CTEs are only supported in v22.1 and later.
+func supportsUnionRecursiveCTEs(version string) (bool, error) {
+	return stdpool.CockroachMinVersion(version, "v22.1")
 }
 
 // In older versions of CRDB, the webhook endpoint is not available so
@@ -409,4 +414,268 @@ func supportsQueries(version string) (bool, error) {
 // the webhook endpoint is available.
 func supportsWebhook(version string) (bool, error) {
 	return stdpool.CockroachMinVersion(version, "v21.2")
+}
+
+func getConfig(
+	cfg *testConfig, fixture *all.Fixture, targetPool *types.TargetPool,
+) (*Config, error) {
+	fixtureCfg := &Config{
+		CDC: cdc.Config{
+			ConveyorConfig: conveyor.Config{
+				Immediate: cfg.immediate,
+				// In the case that the "queries" configuration is enabled, the
+				// testWorkload will create two changefeeds that target the same
+				// target schema. Because of limitations on the CDC side right
+				// now, we don't differentiate between resolved timestamps from
+				// different streams. Therefore, the backwards data check
+				// should be disabled in the multiple changefeed case since we
+				// know the backwards data check will fail without disabling it.
+				// Links for context:
+				// https://github.com/cockroachdb/cockroach/issues/112880
+				// https://github.com/cockroachdb/replicator/issues/574
+				SkipBackwardsDataCheck: cfg.queries,
+			},
+			SequencerConfig: sequencer.Config{
+				RetireOffset: time.Hour, // Allow post-hoc inspection of staged data.
+				Parallelism:  1,
+			},
+		},
+		HTTP: stdserver.Config{
+			BindAddr:           "127.0.0.1:0",
+			GenerateSelfSigned: cfg.webhook, // Webhook implies self-signed TLS is ok.
+		},
+		Staging: stagingProd.StagingConfig{
+			CommonConfig: stagingProd.CommonConfig{
+				Conn:        fixture.StagingPool.ConnectionString,
+				MaxPoolSize: 16,
+			},
+			Schema: fixture.StagingDB.Schema(),
+		},
+		Target: stagingProd.TargetConfig{
+			CommonConfig: stagingProd.CommonConfig{
+				Conn:        targetPool.ConnectionString,
+				MaxPoolSize: 16,
+			},
+		},
+	}
+
+	// Preflight sets default values that are not set in the testConfig.
+	return fixtureCfg, fixtureCfg.Preflight()
+}
+
+func TestWorkload(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *testConfig
+	}{
+		{"webhook true diff true queries false",
+			&testConfig{webhook: true, diff: true, queries: false}},
+		{"webhook true diff false queries false",
+			&testConfig{webhook: true, diff: false, queries: false}},
+		// In order to emit all deletes in queries mode, the
+		// diff/queries/keyInValue must all be set together.
+		{"webhook true diff true queries true key in value true",
+			&testConfig{webhook: true, diff: true, queries: true, keyInValue: true}},
+		{"webhook false diff true queries false",
+			&testConfig{webhook: false, diff: true, queries: false}},
+		{"webhook false diff false queries false",
+			&testConfig{webhook: false, diff: false, queries: false}},
+		// Same note as above for the additional options that must be set
+		// alongside queries == true.
+		{"webhook false diff true queries true key in value true",
+			&testConfig{webhook: false, diff: true, queries: true, keyInValue: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testWorkload(t, tt.cfg)
+		})
+	}
+}
+
+func testWorkload(t *testing.T, cfg *testConfig) {
+	t.Parallel()
+	const maxIterations = 25
+
+	log.SetLevel(log.DebugLevel)
+	r := require.New(t)
+
+	// Create the target fixture, which will be used
+	// to determine if all the data was written to the target.
+	targetFixture, err := all.NewFixture(t)
+	r.NoError(err)
+	sourceVersion := targetFixture.SourcePool.Version
+
+	// Union for recursive CTEs is required in order to use the schema
+	// inspection code required to set up the fixture.
+	supportsUnionRecursiveCTEs, err := supportsUnionRecursiveCTEs(sourceVersion)
+	r.NoError(err)
+	if !supportsUnionRecursiveCTEs {
+		t.Skipf("Union in recursive CTEs is not compatible with %s version of cockroach.",
+			sourceVersion)
+	}
+
+	// The original source is from the target fixture.
+	supportsWebhook, err := supportsWebhook(sourceVersion)
+	r.NoError(err)
+	if cfg.webhook && !supportsWebhook {
+		t.Skipf("Webhook is not compatible with %s version of cockroach.", sourceVersion)
+	}
+	supportsQueries, err := supportsQueries(sourceVersion)
+	r.NoError(err)
+	if cfg.queries && !supportsQueries {
+		t.Skipf("CDC queries are not compatible with %s version of cockroach", sourceVersion)
+	}
+
+	ctx := targetFixture.Context
+	targetChecker, _, err := targetFixture.NewWorkload(ctx, &all.WorkloadConfig{
+		DisableFK: cfg.queries,
+	})
+	r.NoError(err)
+
+	sourceSchema := targetFixture.SourceSchema.Schema()
+	targetSchema := targetFixture.TargetSchema.Schema()
+	sourceGeneratorWorkload := workload.NewGeneratorBase(
+		ident.NewTable(sourceSchema, targetChecker.Parent.Name().Table()),
+		ident.NewTable(sourceSchema, targetChecker.Child.Name().Table()),
+	)
+
+	// Creates the tables on the source side, so that the same table
+	// names exist in both the source and the target, a requirement for
+	// replication here.
+	sourcePool := targetFixture.SourcePool
+	parent := sourceGeneratorWorkload.Parent
+	child := sourceGeneratorWorkload.Child
+	parentSQL, childSQL := all.WorkloadSchema(
+		&all.WorkloadConfig{}, sourcePool.Product,
+		parent, child)
+	_, err = sourcePool.ExecContext(ctx, parentSQL)
+	r.NoError(err)
+	_, err = sourcePool.ExecContext(ctx, childSQL)
+	r.NoError(err)
+
+	// In order to ensure that the source fixture has knowledge of the new
+	// tables created on the source side, the source
+	// fixture must be created after those tables are created.
+	// Alternatively, if the source fixture must be created earlier, then
+	// after new tables are added, the source fixture must be refreshed.
+	// The source fixture can be refreshed by doing the following:
+	// sourceFixture.Watcher.Refresh(ctx, targetPool)
+	sourceFixture, err := all.NewFixtureFromBase(targetFixture.Swapped())
+	r.NoError(err)
+
+	// Get test configurations for the server.
+	serverCfg, err := getConfig(cfg, sourceFixture, targetFixture.TargetPool)
+	r.NoError(err)
+
+	// Create the test server fixture.
+	connCtx := targetFixture.Context
+	testFixture, cancel, err := newTestFixture(connCtx, serverCfg)
+	defer cancel()
+	r.NoError(err)
+	stdlogical.AddHandlers(testFixture.Authenticator, testFixture.Server.GetServeMux(), testFixture.Diagnostics)
+
+	// Insert a testing JWT key so we can properly talk to the webhook
+	// in an authenticated manner.
+	method, priv, err := jwtAuth.InsertTestingKey(ctx, targetFixture.StagingPool,
+		testFixture.Authenticator, targetFixture.StagingDB)
+	r.NoError(err)
+
+	targetDB := targetSchema.Schema()
+	targetParent := ident.NewTable(targetDB, targetChecker.Parent.Name().Table())
+	targetChild := ident.NewTable(targetDB, targetChecker.Child.Name().Table())
+	_, token, err := jwtAuth.Sign(method, priv, []ident.Schema{targetParent.Schema(), diag.Schema})
+	r.NoError(err)
+
+	// Create the changefeed on the source CRDB.
+	tables := []ident.Table{sourceGeneratorWorkload.Parent, sourceGeneratorWorkload.Child}
+	host := testFixture.Listener.Addr().String()
+
+	if cfg.queries {
+		createParentStmt := sinktest.ChangefeedStatement{
+			Diff:                   cfg.diff,
+			Host:                   host,
+			QueryProjectionColumns: []ident.Ident{ident.New("parent"), ident.New("val")},
+			SourceVersion:          sourceVersion,
+			Tables:                 tables,
+			Target:                 targetParent,
+			Token:                  token,
+			Webhook:                cfg.webhook,
+		}
+		createParentStmtStr := createParentStmt.String()
+
+		createChildStmt := sinktest.ChangefeedStatement{
+			Diff:                   cfg.diff,
+			Host:                   host,
+			QueryProjectionColumns: []ident.Ident{ident.New("parent"), ident.New("child"), ident.New("val")},
+			SourceVersion:          sourceVersion,
+			Tables:                 []ident.Table{tables[1]},
+			Target:                 targetChild,
+			Token:                  token,
+			Webhook:                cfg.webhook,
+		}
+		createChildStmtStr := createChildStmt.String()
+
+		log.Debugf("create parent changefeed statement is %s", createParentStmtStr)
+		_, err = sourcePool.ExecContext(ctx, createParentStmtStr)
+		r.NoError(err)
+		log.Debugf("create child changefeed statement is %s", createChildStmtStr)
+		_, err = sourcePool.ExecContext(ctx, createChildStmtStr)
+		r.NoError(err)
+	} else {
+		createStmt := sinktest.ChangefeedStatement{
+			Diff:          cfg.diff,
+			Host:          host,
+			SourceVersion: sourceVersion,
+			Tables:        tables,
+			Target:        targetParent,
+			Token:         token,
+			Webhook:       cfg.webhook,
+		}
+		createStmtStr := createStmt.String()
+		log.Debugf("create changefeed statement is %s", createStmtStr)
+		_, err = sourcePool.ExecContext(ctx, createStmtStr)
+		r.NoError(err)
+	}
+
+	acc := types.OrderedAcceptorFrom(sourceFixture.ApplyAcceptor, sourceFixture.Watchers)
+
+	for i := range maxIterations {
+		batch := &types.MultiBatch{}
+		sourceGeneratorWorkload.GenerateInto(batch, hlc.New(int64(i), i+1))
+
+		// Insert data on the source since it will flow from changefeeds
+		// to the staging DB and then to the target.
+		tx, err := sourceFixture.TargetPool.BeginTx(ctx, &sql.TxOptions{})
+		r.NoError(err)
+		r.NoError(acc.AcceptMultiBatch(ctx, batch, &types.AcceptOptions{TargetQuerier: tx}))
+		r.NoError(tx.Commit())
+	}
+
+	// Merge the generator values into the target checker.
+	// This makes it so that the target checker has all the expected
+	// data from the source generator workload.
+	targetChecker.CopyFrom(sourceGeneratorWorkload)
+
+	// Adapted this polling logic from the above test.
+	// This is a simpler way to determine if the rows
+	// were backfilled on the target.
+	for {
+		parentCt, err := base.GetRowCount(ctx, targetFixture.TargetPool, targetParent)
+		r.NoError(err)
+		childCt, err := base.GetRowCount(ctx, targetFixture.TargetPool, targetChild)
+		r.NoError(err)
+		if parentCt >= len(targetChecker.ParentRows()) && childCt >= len(targetChecker.ChildRows()) {
+			break
+		}
+		log.Debug("waiting for target rows to be written")
+		time.Sleep(time.Second)
+	}
+
+	r.True(targetChecker.CheckConsistent(ctx, t))
+
+	// We need to wait for the connection to shut down
+	// so that there is no dangling state from the test.
+	connCtx.Stop(time.Minute)
+	<-connCtx.Done()
 }
