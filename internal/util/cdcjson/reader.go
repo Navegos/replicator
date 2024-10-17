@@ -66,7 +66,7 @@ func BulkMutationReader() MutationReader {
 func QueryMutationReader(keys *ident.Map[int]) MutationReader {
 	return func(reader io.Reader) (types.Mutation, error) {
 		payload := queryPayload{
-			keys: keys,
+			keysToExtract: keys,
 		}
 		if err := Decode(reader, &payload); err != nil {
 			return types.Mutation{}, err

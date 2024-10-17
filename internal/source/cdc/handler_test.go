@@ -44,6 +44,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/util/hlc"
 	"github.com/cockroachdb/replicator/internal/util/ident"
 	"github.com/cockroachdb/replicator/internal/util/merge"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -606,6 +607,115 @@ func TestDiscard(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	a.Equal(200, rec.Code)
+}
+
+// TestGetPKColumns ensures that we skip key data extraction in the correct
+// conditions, to avoid doing duplicated processing.
+func TestGetPKColumns(t *testing.T) {
+	a := assert.New(t)
+	fixture, tableInfo := createFixture(t, &fixtureConfig{})
+	h := fixture.Handler
+
+	tests := []struct {
+		name      string
+		message   *changefeedMessage
+		request   *request
+		wantError error
+		keys      *ident.Map[int]
+	}{
+		{
+			name: "valid payload without key",
+			message: &changefeedMessage{
+				Payload: []json.RawMessage{
+					[]byte(`{ "topic" : "my_topic", "updated" : "30.0" }`),
+				},
+			},
+			request: &request{
+				target: tableInfo.Name(),
+				body: strings.NewReader(fmt.Sprintf(`
+{ "payload" : [
+{ "topic" : %[1]s, "updated" : "30.0" }
+] }
+`, fixture.TargetSchema.Raw())),
+			},
+			wantError: nil,
+			keys:      ident.MapOf[int]("pk", 0),
+		},
+		{
+			name: "valid payload with key",
+			message: &changefeedMessage{
+				Payload: []json.RawMessage{
+					[]byte(`{ "key" : [ 42 ], "topic" : "my_topic", "updated" : "30.0" }`),
+				},
+			},
+			request: &request{
+				target: fixture.TargetSchema,
+				body: strings.NewReader(fmt.Sprintf(`
+{ "payload" : [
+{ "key" : [ 42 ], "topic" : %[1]s, "updated" : "30.0" }
+] }
+`, fixture.TargetSchema.Raw())),
+			},
+			wantError: nil,
+			keys:      nil,
+		},
+		{
+			name: "empty payload",
+			message: &changefeedMessage{
+				Payload: []json.RawMessage{},
+			},
+			request: &request{
+				target: fixture.TargetSchema,
+				body: strings.NewReader(`
+{ "payload" : [] }
+`),
+			},
+			wantError: errors.New("cannot get PK columns for an empty mutation"),
+			keys:      nil,
+		},
+		{
+			name: "malformed JSON",
+			message: &changefeedMessage{
+				Payload: []json.RawMessage{
+					[]byte(`{ "ey : [ "invalid" ] }`),
+				},
+			},
+			request: &request{
+				target: fixture.TargetSchema,
+				body: strings.NewReader(`
+{ "payload" : [
+{ "ey : [ "invalid" ] }
+] }
+`),
+			},
+			wantError: fmt.Errorf(`invalid character 'i' after object key`),
+			keys:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys, err := h.getPKColumns(tt.request, tt.message)
+
+			if tt.wantError != nil {
+				a.EqualError(err, tt.wantError.Error())
+			} else {
+				a.NoError(err)
+			}
+
+			if tt.keys == nil {
+				// Check that the retrieved keys is nil.
+				a.Nil(keys)
+			} else {
+				// Check that each key value pair matches.
+				for k, v := range tt.keys.All() {
+					got, ok := keys.Get(k)
+					a.True(ok)
+					a.Equal(v, got)
+				}
+			}
+		})
+	}
 }
 
 // TestMergeInt ensures that we have a clean, end-to-end test of a
