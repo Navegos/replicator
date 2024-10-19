@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/target/apply"
 	"github.com/cockroachdb/replicator/internal/target/dlq"
 	"github.com/cockroachdb/replicator/internal/target/load"
+	"github.com/cockroachdb/replicator/internal/target/schemawatch"
 	"github.com/cockroachdb/replicator/internal/types"
 	"github.com/cockroachdb/replicator/internal/util/applycfg"
 	"github.com/cockroachdb/replicator/internal/util/diag"
@@ -54,12 +55,12 @@ type Fixture struct {
 	Leases         types.Leases
 	Loader         *load.Loader
 	Memo           types.Memo
+	SchemaWatch    *schemawatch.Config
 	StageConfig    *stage.Config
 	Stagers        types.Stagers
 	VersionChecker *version.Checker
 	Watchers       types.Watchers
-
-	Watcher types.Watcher // A watcher for TestDB.
+	Watcher        types.Watcher // A watcher for TestDB.
 }
 
 // Applier returns a bound function that will apply mutations to the

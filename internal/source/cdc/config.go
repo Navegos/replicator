@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/script"
 	"github.com/cockroachdb/replicator/internal/sequencer"
 	"github.com/cockroachdb/replicator/internal/target/dlq"
+	"github.com/cockroachdb/replicator/internal/target/schemawatch"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
@@ -39,6 +40,7 @@ type Config struct {
 	ConveyorConfig  conveyor.Config
 	DLQConfig       dlq.Config
 	SequencerConfig sequencer.Config
+	SchemaWatch     schemawatch.Config
 	ScriptConfig    script.Config
 	// Discard all incoming HTTP payloads. This is useful for tuning
 	// changefeed throughput without considering Replicator performance.
@@ -61,8 +63,9 @@ type Config struct {
 func (c *Config) Bind(f *pflag.FlagSet) {
 	c.ConveyorConfig.Bind(f)
 	c.DLQConfig.Bind(f)
-	c.SequencerConfig.Bind(f)
+	c.SchemaWatch.Bind(f)
 	c.ScriptConfig.Bind(f)
+	c.SequencerConfig.Bind(f)
 
 	f.BoolVar(&c.Discard, "discard", false,
 		"(dangerous) discard all incoming HTTP requests; useful for changefeed throughput testing")
@@ -87,6 +90,9 @@ func (c *Config) Preflight() error {
 		return err
 	}
 	if err := c.ScriptConfig.Preflight(); err != nil {
+		return err
+	}
+	if err := c.SchemaWatch.Preflight(); err != nil {
 		return err
 	}
 

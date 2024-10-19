@@ -35,6 +35,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/source/objstore/providers/s3"
 	"github.com/cockroachdb/replicator/internal/staging/stage"
 	"github.com/cockroachdb/replicator/internal/target/dlq"
+	"github.com/cockroachdb/replicator/internal/target/schemawatch"
 	"github.com/cockroachdb/replicator/internal/util/hlc"
 	"github.com/cockroachdb/replicator/internal/util/ident"
 	"github.com/cockroachdb/replicator/internal/util/secure"
@@ -132,14 +133,15 @@ var Providers = map[string]Provider{
 // Config contains the configuration necessary for creating a
 // connection to an object store.
 type Config struct {
-	Conveyor  conveyor.Config
-	DLQ       dlq.Config
-	Script    script.Config
-	Sequencer sequencer.Config
-	Stage     stage.Config           // Staging table configuration.
-	Staging   sinkprod.StagingConfig // Staging database configuration.
-	Target    sinkprod.TargetConfig
-	TLS       secure.Config
+	Conveyor    conveyor.Config
+	DLQ         dlq.Config
+	SchemaWatch schemawatch.Config
+	Script      script.Config
+	Sequencer   sequencer.Config
+	Stage       stage.Config           // Staging table configuration.
+	Staging     sinkprod.StagingConfig // Staging database configuration.
+	Target      sinkprod.TargetConfig
+	TLS         secure.Config
 
 	// Object store specific configuration
 	BufferSize           int
@@ -166,6 +168,7 @@ type Config struct {
 func (c *Config) Bind(f *pflag.FlagSet) {
 	c.Conveyor.Bind(f)
 	c.DLQ.Bind(f)
+	c.SchemaWatch.Bind(f)
 	c.Script.Bind(f)
 	c.Sequencer.Bind(f)
 	c.Stage.Bind(f)
@@ -207,6 +210,9 @@ cluster_logical_timestamp().`)
 // provided.
 func (c *Config) Preflight(ctx context.Context) error {
 	if err := c.DLQ.Preflight(); err != nil {
+		return err
+	}
+	if err := c.SchemaWatch.Preflight(); err != nil {
 		return err
 	}
 	if err := c.Script.Preflight(); err != nil {

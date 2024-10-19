@@ -28,6 +28,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/sinkprod"
 	"github.com/cockroachdb/replicator/internal/staging/stage"
 	"github.com/cockroachdb/replicator/internal/target/dlq"
+	"github.com/cockroachdb/replicator/internal/target/schemawatch"
 	"github.com/cockroachdb/replicator/internal/util/ident"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
@@ -41,12 +42,13 @@ type EagerConfig Config
 // Config contains the configuration necessary for creating a
 // replication connection. ServerID and SourceConn are mandatory.
 type Config struct {
-	DLQ       dlq.Config
-	Script    script.Config
-	Sequencer sequencer.Config
-	Stage     stage.Config           // Staging table configuration.
-	Staging   sinkprod.StagingConfig // Staging database configuration.
-	Target    sinkprod.TargetConfig
+	DLQ         dlq.Config
+	SchemaWatch schemawatch.Config
+	Script      script.Config
+	Sequencer   sequencer.Config
+	Stage       stage.Config           // Staging table configuration.
+	Staging     sinkprod.StagingConfig // Staging database configuration.
+	Target      sinkprod.TargetConfig
 
 	InitialGTID   string
 	FetchMetadata bool
@@ -68,6 +70,7 @@ type Config struct {
 // Bind adds flags to the set. It delegates to the embedded Config.Bind.
 func (c *Config) Bind(f *pflag.FlagSet) {
 	c.DLQ.Bind(f)
+	c.SchemaWatch.Bind(f)
 	c.Script.Bind(f)
 	c.Sequencer.Bind(f)
 	c.Stage.Bind(f)
@@ -139,6 +142,9 @@ func newClientTLSConfig(
 // provided.
 func (c *Config) Preflight() error {
 	if err := c.DLQ.Preflight(); err != nil {
+		return err
+	}
+	if err := c.SchemaWatch.Preflight(); err != nil {
 		return err
 	}
 	if err := c.Script.Preflight(); err != nil {

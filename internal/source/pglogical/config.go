@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/sinkprod"
 	"github.com/cockroachdb/replicator/internal/staging/stage"
 	"github.com/cockroachdb/replicator/internal/target/dlq"
+	"github.com/cockroachdb/replicator/internal/target/schemawatch"
 	"github.com/cockroachdb/replicator/internal/util/ident"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
@@ -42,12 +43,13 @@ type EagerConfig Config
 // replication connection. All field, other than TestControls, are
 // mandatory unless explicitly indicated.
 type Config struct {
-	DLQ       dlq.Config
-	Script    script.Config
-	Sequencer sequencer.Config
-	Stage     stage.Config           // Staging table configuration.
-	Staging   sinkprod.StagingConfig // Staging database configuration.
-	Target    sinkprod.TargetConfig
+	DLQ         dlq.Config
+	SchemaWatch schemawatch.Config
+	Script      script.Config
+	Sequencer   sequencer.Config
+	Stage       stage.Config           // Staging table configuration.
+	Staging     sinkprod.StagingConfig // Staging database configuration.
+	Target      sinkprod.TargetConfig
 
 	// The name of the publication to attach to.
 	Publication string
@@ -65,6 +67,7 @@ type Config struct {
 // Bind adds flags to the set.
 func (c *Config) Bind(f *pflag.FlagSet) {
 	c.DLQ.Bind(f)
+	c.SchemaWatch.Bind(f)
 	c.Script.Bind(f)
 	c.Sequencer.Bind(f)
 	c.Stage.Bind(f)
@@ -99,6 +102,9 @@ func (c *Config) Bind(f *pflag.FlagSet) {
 // provided.
 func (c *Config) Preflight() error {
 	if err := c.DLQ.Preflight(); err != nil {
+		return err
+	}
+	if err := c.SchemaWatch.Preflight(); err != nil {
 		return err
 	}
 	if err := c.Script.Preflight(); err != nil {
