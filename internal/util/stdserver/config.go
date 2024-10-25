@@ -17,15 +17,20 @@
 package stdserver
 
 import (
+	"time"
+
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 )
+
+const defaultHealthCheckTimeout = 5 * time.Second
 
 // Config contains the user-visible configuration for running an http server.
 type Config struct {
 	BindAddr           string
 	DisableAuth        bool
 	GenerateSelfSigned bool
+	HealthCheckTimeout time.Duration
 	TLSCertFile        string
 	TLSPrivateKey      string
 }
@@ -47,6 +52,11 @@ func (c *Config) Bind(flags *pflag.FlagSet) {
 		"tlsSelfSigned",
 		false,
 		"if true, generate a self-signed TLS certificate valid for 'localhost'")
+	flags.DurationVar(
+		&c.HealthCheckTimeout,
+		"healthCheckTimeout",
+		defaultHealthCheckTimeout,
+		"the timeout for the health check endpoint")
 	flags.StringVar(
 		&c.TLSCertFile,
 		"tlsCertificate",
@@ -69,6 +79,9 @@ func (c *Config) Preflight() error {
 	}
 	if c.GenerateSelfSigned && c.TLSCertFile != "" {
 		return errors.New("self-signed certificate requested, but also specified a TLS certificate")
+	}
+	if c.HealthCheckTimeout <= 0 {
+		c.HealthCheckTimeout = defaultHealthCheckTimeout
 	}
 	return nil
 }

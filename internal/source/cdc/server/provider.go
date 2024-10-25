@@ -85,9 +85,12 @@ func ProvideListener(
 // ProvideMux is called by Wire to construct the http.ServeMux that
 // routes requests.
 func ProvideMux(
-	handler *cdc.Handler, stagingPool *types.StagingPool, targetPool *types.TargetPool,
+	config *Config,
+	handler *cdc.Handler,
+	stagingPool *types.StagingPool,
+	targetPool *types.TargetPool,
 ) *http.ServeMux {
-	return stdserver.Mux(handler, stagingPool, targetPool)
+	return stdserver.Mux(&config.HTTP, handler, stagingPool, targetPool)
 }
 
 // ProvideServer is called by Wire to construct the top-level network

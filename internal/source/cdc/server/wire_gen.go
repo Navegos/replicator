@@ -140,7 +140,7 @@ func NewServer(ctx *stopper.Context, config *Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	serveMux := ProvideMux(handler, stagingPool, targetPool)
+	serveMux := ProvideMux(config, handler, stagingPool, targetPool)
 	tlsConfig, err := ProvideTLSConfig(config)
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func newTestFixture(context *stopper.Context, config *Config) (*testFixture, fun
 	if err != nil {
 		return nil, nil, err
 	}
-	serveMux := ProvideMux(handler, stagingPool, targetPool)
+	serveMux := ProvideMux(config, handler, stagingPool, targetPool)
 	tlsConfig, err := ProvideTLSConfig(config)
 	if err != nil {
 		return nil, nil, err

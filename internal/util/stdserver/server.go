@@ -19,7 +19,9 @@
 package stdserver
 
 import (
+	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 
@@ -32,6 +34,11 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
+
+const healthCheckPath = "/_/healthz"
+
+// errHealthCheckTimeout is a causal error used by [Mux].
+var errHealthCheckTimeout = errors.New("health check timed out")
 
 // A Server receives incoming messages and
 // applies them to a target cluster.
@@ -112,18 +119,32 @@ func New(
 
 // Mux constructs the http.ServeMux that routes requests.
 func Mux(
-	handler http.Handler, stagingPool *types.StagingPool, targetPool *types.TargetPool,
+	cfg *Config, handler http.Handler, stagingPool *types.StagingPool, targetPool *types.TargetPool,
 ) *http.ServeMux {
 	mux := &http.ServeMux{}
-	mux.HandleFunc("/_/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := stagingPool.Ping(r.Context()); err != nil {
-			log.WithError(err).Warn("health check failed for staging pool")
-			http.Error(w, "health check failed for staging", http.StatusInternalServerError)
+	mux.HandleFunc(healthCheckPath, func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeoutCause(context.Background(),
+			cfg.HealthCheckTimeout, errHealthCheckTimeout)
+		defer cancel()
+
+		setError := func(err error, name string) {
+			if errors.Is(context.Cause(ctx), errHealthCheckTimeout) {
+				msg := fmt.Sprintf("health check for %s pool timed out", name)
+				log.Warn(msg)
+				http.Error(w, msg, http.StatusRequestTimeout)
+				return
+			}
+			msg := fmt.Sprintf("health check fail for %s pool: %v", name, err)
+			log.WithError(err).Warn(msg)
+			http.Error(w, msg, http.StatusInternalServerError)
+		}
+
+		if err := stagingPool.Ping(ctx); err != nil {
+			setError(err, "staging")
 			return
 		}
-		if err := targetPool.PingContext(r.Context()); err != nil {
-			log.WithError(err).Warn("health check failed for target pool")
-			http.Error(w, "health check failed for target", http.StatusInternalServerError)
+		if err := targetPool.PingContext(ctx); err != nil {
+			setError(err, "target")
 			return
 		}
 		http.Error(w, "OK", http.StatusOK)
