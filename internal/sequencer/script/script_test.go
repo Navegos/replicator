@@ -21,6 +21,7 @@ package script_test
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -36,9 +37,145 @@ import (
 	"github.com/cockroachdb/replicator/internal/types"
 	"github.com/cockroachdb/replicator/internal/util/hlc"
 	"github.com/cockroachdb/replicator/internal/util/ident"
+	"github.com/cockroachdb/replicator/internal/util/subfs"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSourceWithoutTargets(t *testing.T) {
+	r := require.New(t)
+
+	fixture, err := all.NewFixture(t)
+	r.NoError(err)
+
+	ctx := fixture.Context
+
+	tbl, err := fixture.CreateTargetTable(ctx,
+		`CREATE TABLE %s (pk INT PRIMARY KEY, v VARCHAR(2048) NOT NULL)`)
+	r.NoError(err)
+
+	scriptCfg := &script.Config{
+		MainPath: "/main.ts",
+		FS: &subfs.SubstitutingFS{
+			FS: &fstest.MapFS{
+				"main.ts": &fstest.MapFile{
+					Data: []byte(`
+import * as api from "replicator@v1";
+function disp(doc, meta) {
+    doc.v = "cowbell";
+    return { "__TABLE__" : [ doc ] }; 
+}
+api.configureSource("__SCHEMA__", {
+  deletesTo: disp,
+  dispatch: disp,
+});
+`)}},
+			Replacer: strings.NewReplacer(
+				"__SCHEMA__", tbl.Name().Schema().Raw(),
+				"__TABLE__", tbl.Name().Raw(),
+			)}}
+
+	seqCfg := &sequencer.Config{
+		Parallelism:     2,
+		QuiescentPeriod: 100 * time.Millisecond,
+	}
+	r.NoError(seqCfg.Preflight())
+	seqFixture, err := seqtest.NewSequencerFixture(fixture,
+		seqCfg,
+		scriptCfg)
+	r.NoError(err)
+
+	wrapped, err := seqFixture.Script.Wrap(ctx, seqFixture.Immediate)
+	r.NoError(err)
+	acc, _, err := wrapped.Start(ctx, &sequencer.StartOptions{
+		Bounds:   notify.VarOf[hlc.Range](hlc.RangeEmpty()),
+		Delegate: types.OrderedAcceptorFrom(fixture.ApplyAcceptor, fixture.Watchers),
+		Group: &types.TableGroup{
+			Enclosing: fixture.TargetSchema.Schema(),
+			Name:      ident.New(tbl.Name().Schema().Raw()), // Aligns with configureSource() call.
+			Tables:    []ident.Table{tbl.Name()},
+		},
+	})
+	r.NoError(err)
+
+	r.NoError(acc.AcceptTableBatch(ctx, sinktest.TableBatchOf(
+		ident.NewTable(tbl.Name().Schema(), ident.New("ignored")),
+		hlc.New(1, 1),
+		[]types.Mutation{
+			{Data: json.RawMessage(`{"pk":1}`), Key: json.RawMessage(`[1]`)},
+		},
+	), &types.AcceptOptions{}))
+
+	ct, err := tbl.RowCount(ctx)
+	r.NoError(err)
+	r.Equal(1, ct)
+}
+
+func TestTargetsWithoutSource(t *testing.T) {
+	r := require.New(t)
+
+	fixture, err := all.NewFixture(t)
+	r.NoError(err)
+
+	ctx := fixture.Context
+
+	tbl, err := fixture.CreateTargetTable(ctx,
+		`CREATE TABLE %s (pk INT PRIMARY KEY, v VARCHAR(2048) NOT NULL)`)
+	r.NoError(err)
+
+	scriptCfg := &script.Config{
+		MainPath: "/main.ts",
+		FS: &subfs.SubstitutingFS{
+			FS: &fstest.MapFS{
+				"main.ts": &fstest.MapFile{
+					Data: []byte(`
+import * as api from "replicator@v1";
+api.configureTable("__TABLE__", {
+  map: (doc) => {
+    doc.v = "cowbell";
+    return doc;
+  }
+});
+`)}},
+			Replacer: strings.NewReplacer(
+				"__TABLE__", tbl.Name().Raw(),
+			)}}
+
+	seqCfg := &sequencer.Config{
+		Parallelism:     2,
+		QuiescentPeriod: 100 * time.Millisecond,
+	}
+	r.NoError(seqCfg.Preflight())
+	seqFixture, err := seqtest.NewSequencerFixture(fixture,
+		seqCfg,
+		scriptCfg)
+	r.NoError(err)
+
+	wrapped, err := seqFixture.Script.Wrap(ctx, seqFixture.Immediate)
+	r.NoError(err)
+	acc, _, err := wrapped.Start(ctx, &sequencer.StartOptions{
+		Bounds:   notify.VarOf[hlc.Range](hlc.RangeEmpty()),
+		Delegate: types.OrderedAcceptorFrom(fixture.ApplyAcceptor, fixture.Watchers),
+		Group: &types.TableGroup{
+			Enclosing: fixture.TargetSchema.Schema(),
+			Name:      ident.New("ignored"),
+			Tables:    []ident.Table{tbl.Name()},
+		},
+	})
+	r.NoError(err)
+
+	r.NoError(acc.AcceptTableBatch(ctx, sinktest.TableBatchOf(
+		tbl.Name(),
+		hlc.New(1, 1),
+		[]types.Mutation{
+			{Data: json.RawMessage(`{"pk":1}`), Key: json.RawMessage(`[1]`)},
+		},
+	), &types.AcceptOptions{}))
+
+	ct, err := tbl.RowCount(ctx)
+	r.NoError(err)
+	r.Equal(1, ct)
+}
 
 func TestUserScriptSequencer(t *testing.T) {
 	for mode := switcher.MinMode; mode <= switcher.MaxMode; mode++ {

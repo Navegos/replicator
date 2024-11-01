@@ -69,49 +69,32 @@ func (w *wrapper) Start(
 		return nil, nil, err
 	}
 
-	// Only inject if the source or any tables have a configuration.
-	sourceBindings, inject := scr.Sources.Get(opts.Group.Name)
-	if !inject {
-		for _, tbl := range opts.Group.Tables {
-			_, inject = scr.Targets.Get(tbl)
-			if inject {
-				break
-			}
-		}
-	}
-	if !inject {
-		return w.delegate.Start(ctx, opts)
-	}
-
-	watcher, err := w.watchers.Get(opts.Group.Enclosing)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// If the userscript has defined any apply functions, we will
-	// need to ensure that a database transaction will be available
-	// to support the api.getTX() function. This is mainly relevant
-	// to immediate mode, in which the sequencer caller won't
-	// necessarily have created a transaction.
-	ensureTX := false
-	for target := range scr.Targets.Values() {
-		if target.UserAcceptor != nil {
-			ensureTX = true
-			break
-		}
-	}
-
 	// Install the target-phase acceptor into the options chain. This
 	// will be invoked for mutations which have passed through the
 	// sequencer stack.
-	opts = opts.Copy()
-	opts.Delegate = types.OrderedAcceptorFrom(&targetAcceptor{
-		delegate:   opts.Delegate,
-		ensureTX:   ensureTX,
-		group:      opts.Group,
-		targetPool: w.targetPool,
-		userScript: scr,
-	}, w.watchers)
+	if scr.Targets.Len() > 0 {
+		// If the userscript has defined an apply function, we need to
+		// ensure that a database transaction will be available to support
+		// the api.getTX() function. This is mainly relevant to immediate
+		// mode, in which the sequencer caller won't necessarily have
+		// provided a transaction.
+		ensureTX := false
+		for tgt := range scr.Targets.Values() {
+			if tgt.UserAcceptor != nil {
+				ensureTX = true
+				break
+			}
+		}
+
+		opts = opts.Copy()
+		opts.Delegate = types.OrderedAcceptorFrom(&targetAcceptor{
+			delegate:   opts.Delegate,
+			ensureTX:   ensureTX,
+			group:      opts.Group,
+			targetPool: w.targetPool,
+			userScript: scr,
+		}, w.watchers)
+	}
 
 	// Initialize downstream sequencer.
 	acc, stat, err := w.delegate.Start(ctx, opts)
@@ -122,11 +105,18 @@ func (w *wrapper) Start(
 	// Install the source-phase acceptor. This provides the user with
 	// the opportunity to rewrite mutations before they are presented to
 	// the upstream sequencer.
-	acc = &sourceAcceptor{
-		delegate:       acc,
-		group:          opts.Group,
-		sourceBindings: sourceBindings,
-		watcher:        watcher,
+	if sourceBindings, ok := scr.Sources.Get(opts.Group.Name); ok {
+		watcher, err := w.watchers.Get(opts.Group.Enclosing)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		acc = &sourceAcceptor{
+			delegate:       acc,
+			group:          opts.Group,
+			sourceBindings: sourceBindings,
+			watcher:        watcher,
+		}
 	}
 	return acc, stat, nil
 }
