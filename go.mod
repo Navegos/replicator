@@ -17,7 +17,7 @@ require (
 	github.com/go-mysql-org/go-mysql v1.9.0
 	github.com/godror/godror v0.44.8
 	github.com/gofrs/uuid v4.4.0+incompatible
-	github.com/golang-jwt/jwt/v4 v4.5.0
+	github.com/golang-jwt/jwt/v4 v4.5.1
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
 	github.com/google/addlicense v1.1.1
 	github.com/google/go-licenses v1.6.0
