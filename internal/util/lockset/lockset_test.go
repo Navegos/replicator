@@ -131,7 +131,6 @@ func TestSmoke(t *testing.T) {
 	outcomes := make([]*notify.Var[*Status], numWaiters)
 	eg, _ := errgroup.WithContext(ctx)
 	for i := 0; i < numWaiters; i++ {
-		i := i // Capture
 		eg.Go(func() error {
 			// Pick a random set of keys, intentionally including duplicate
 			// key values.

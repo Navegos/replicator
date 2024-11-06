@@ -1070,7 +1070,6 @@ func TestAllDataTypes(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		tc := tc // Capture for t.Parallel().
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := require.New(t)
