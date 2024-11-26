@@ -110,12 +110,6 @@ jobs:
 
           # Tests for older CockroachDB versions as a source.
           - cockroachdb: v24.1
-            source: source-cockroachdb-v20.1
-            sourceConn: "postgresql://root@127.0.0.1:5400/defaultdb?sslmode=disable"
-          - cockroachdb: v24.1
-            source: source-cockroachdb-v20.2
-            sourceConn: "postgresql://root@127.0.0.1:5400/defaultdb?sslmode=disable"
-          - cockroachdb: v24.1
             source: source-cockroachdb-v21.1
             sourceConn: "postgresql://root@127.0.0.1:5400/defaultdb?sslmode=disable"
           - cockroachdb: v24.1

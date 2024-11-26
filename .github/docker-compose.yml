@@ -29,16 +29,6 @@ services:
   # These are older versions of CRDB that we want to support as sources,
   # but not as staging or as a target. The network_mode is host so that
   # outgoing changefeed network requests can connect to the test server.
-  source-cockroachdb-v20.1:
-    image: cockroachdb/cockroach:latest-v20.1
-    network_mode: host
-    entrypoint: /cockroach/cockroach
-    command: start-single-node --insecure --store type=mem,size=2G --listen-addr :5400 --http-addr :8081
-  source-cockroachdb-v20.2:
-    image: cockroachdb/cockroach:latest-v20.2
-    network_mode: host
-    entrypoint: /cockroach/cockroach
-    command: start-single-node --insecure --store type=mem,size=2G --listen-addr :5400 --http-addr :8081
   source-cockroachdb-v21.1:
     image: cockroachdb/cockroach:latest-v21.1
     network_mode: host
