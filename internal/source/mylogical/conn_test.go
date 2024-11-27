@@ -452,3 +452,113 @@ func TestInitialConsistentPoint(t *testing.T) {
 		})
 	}
 }
+
+func TestIsColumnSignedFromColumnType(t *testing.T) {
+	// Define table-driven test cases
+	tests := []struct {
+		name        string
+		columnTypes [][]byte
+		idx         int
+		expected    bool
+	}{
+		{
+			name:        "signed column type",
+			columnTypes: [][]byte{[]byte("bigint"), []byte("int unsigned")},
+			idx:         0,
+			expected:    true,
+		},
+		{
+			name:        "unsigned column type",
+			columnTypes: [][]byte{[]byte("bigint"), []byte("int unsigned")},
+			idx:         1,
+			expected:    false,
+		},
+		{
+			name:        "empty column type",
+			columnTypes: [][]byte{[]byte("")},
+			idx:         0,
+			expected:    true, // Default to signed for empty type
+		},
+		{
+			name:        "unsigned with extra whitespace",
+			columnTypes: [][]byte{[]byte(" int  unsigned ")},
+			idx:         0,
+			expected:    false,
+		},
+		{
+			name:        "mixed casing in unsigned",
+			columnTypes: [][]byte{[]byte("BigInt UNSIGNED")},
+			idx:         0,
+			expected:    false,
+		},
+	}
+
+	// Run each test case
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isColumnSignedFromColumnType(tt.columnTypes, tt.idx)
+			require.Equal(t, tt.expected, result, "test: %s", tt.name)
+		})
+	}
+}
+
+func TestIsColumnSignedFromBitmap(t *testing.T) {
+
+	tests := []struct {
+		name        string
+		bitmap      []byte
+		columnIndex int
+		expected    bool
+	}{
+		{
+			name:        "signed column in first byte",
+			bitmap:      []byte{0b01011010}, // First byte: [0=Signed, 1=Unsigned, 0=Signed, 1=Unsigned, ...]
+			columnIndex: 0,
+			expected:    true, // bit 7 is 0 (signed)
+		},
+		{
+			name:        "unsigned column in first byte",
+			bitmap:      []byte{0b01011010}, // First byte: [0, 1, 0, 1, 1, 0, ...]
+			columnIndex: 1,
+			expected:    false, // bit 6 is 1 (unsigned)
+		},
+		{
+			name:        "signed column in second byte",
+			bitmap:      []byte{0b01011010, 0b10110111},
+			columnIndex: 9, // second byte, bit 6 (signed)
+			expected:    true,
+		},
+		{
+			name:        "unsigned column in second byte",
+			bitmap:      []byte{0b01011010, 0b10110111},
+			columnIndex: 8, // second byte, bit 7 (unsigned)
+			expected:    false,
+		},
+		{
+			name:        "out of bounds index",
+			bitmap:      []byte{0b01011010},
+			columnIndex: 16,
+			expected:    true, // default to signed
+		},
+		{
+			name:        "signed column in multi-byte bitmap",
+			bitmap:      []byte{0b01011010, 0b10110111, 0b11000000},
+			columnIndex: 18, // third byte, bit 5 (signed)
+			expected:    true,
+		},
+		{
+			name:        "unsigned column in multi-byte bitmap",
+			bitmap:      []byte{0b01011010, 0b10110111, 0b11000000},
+			columnIndex: 17, // third byte, bit 6 (unsigned)
+			expected:    false,
+		},
+	}
+
+	// Run each test case
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isColumnSignedFromBitmap(tt.bitmap, tt.columnIndex)
+			require.Equal(t, tt.expected, result, "test: %s", tt.name)
+		})
+	}
+}

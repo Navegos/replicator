@@ -250,6 +250,7 @@ func TestColumNames(t *testing.T) {
 		table    ident.Table
 		stmt     string
 		colnames [][]byte
+		colTypes [][]byte
 		keys     []uint64
 	}{
 		{
@@ -257,6 +258,7 @@ func TestColumNames(t *testing.T) {
 			table:    ident.NewTable(dbName, ident.New("one")),
 			stmt:     "CREATE TABLE one (k INT PRIMARY KEY, v INT)",
 			colnames: [][]byte{[]byte("k"), []byte("v")},
+			colTypes: [][]byte{[]byte("int"), []byte("int")},
 			keys:     []uint64{0},
 		},
 		{
@@ -264,13 +266,15 @@ func TestColumNames(t *testing.T) {
 			table:    ident.NewTable(dbName, ident.New("two")),
 			stmt:     "CREATE TABLE two (k INT PRIMARY KEY, a INT,b INT, c INT, d INT)",
 			colnames: [][]byte{[]byte("k"), []byte("a"), []byte("b"), []byte("c"), []byte("d")},
+			colTypes: [][]byte{[]byte("int"), []byte("int"), []byte("int"), []byte("int"), []byte("int")},
 			keys:     []uint64{0},
 		},
 		{
 			name:     "few keys",
 			table:    ident.NewTable(dbName, ident.New("three")),
-			stmt:     "CREATE TABLE three (k1 INT, a INT,b INT, c INT, d INT,k2 int, primary key (k1,k2))",
+			stmt:     "CREATE TABLE three (k1 INT, a INT,b INT UNSIGNED, c INT, d INT,k2 int, primary key (k1,k2))",
 			colnames: [][]byte{[]byte("k1"), []byte("a"), []byte("b"), []byte("c"), []byte("d"), []byte("k2")},
+			colTypes: [][]byte{[]byte("int"), []byte("int"), []byte("unsigned"), []byte("int"), []byte("int"), []byte("int")},
 			keys:     []uint64{0, 5},
 		},
 	}
@@ -279,9 +283,17 @@ func TestColumNames(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := myExec(ctx, myPool, tt.stmt)
 			r.NoError(err)
-			colnames, keys, err := myConn.getColNames(tt.table)
+			colnames, colTypes, keys, err := myConn.getColNames(tt.table)
 			a.NoError(err)
 			a.Equal(tt.colnames, colnames)
+
+			// For older MySQL dialects and MariaDB, the type will show
+			// up with the type and size (i.e. int(11)).
+			// In order to support these differences, let's just check
+			// that the colTypes contain what's within tt.colTypes.
+			for i, colType := range tt.colTypes {
+				r.Contains(string(colTypes[i]), string(colType))
+			}
 			a.Equal(tt.keys, keys)
 		})
 	}
@@ -330,6 +342,10 @@ func TestDataTypes(t *testing.T) {
 	}{
 		// BIGINT(size)
 		{`bigint`, ``, `bigint`, []any{0, -1, 112358}},
+		// For the unsigned case we want the min value, a value in the
+		// middle, and one that falls outside the range of a signed
+		// bigint but within the range of an unsigned bigint.
+		{`bigint unsigned`, ``, `decimal`, []any{uint64(0), uint64(250000), uint64(9823772057939841974)}},
 		// BINARY(size)
 		{`binary`, `(128)`, `bytes`, []any{[]byte(shortString)}},
 		// BIT(size)

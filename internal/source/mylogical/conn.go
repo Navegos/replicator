@@ -401,9 +401,22 @@ func (c *conn) onDataTuple(
 			case []byte:
 				enc[targetCol.Name.Raw()] = string(s)
 			case int64:
-				// if it's a bit need to convert to a string representation
+				// if it's a bit need to convert to a string
+				// representation
 				if targetCol.Type == fmt.Sprintf("%d", mysql.MYSQL_TYPE_BIT) {
 					enc[targetCol.Name.Raw()] = strconv.FormatInt(s, 2)
+				} else if targetCol.Type == fmt.Sprintf("%d", mysql.MYSQL_TYPE_LONGLONG) && !targetCol.IsSigned {
+					// The go-mysql type for bigint corresponds to
+					// LONGLONG (8). The targetCol.IsSigned tells us
+					// if it is signed or not, which is crucial for
+					// determining if it is unsigned and needs this
+					// conditional logic.
+
+					// Confirmed that casting to `uint64` suffices
+					// to get the proper value on the target since it
+					// can handle data in the correct range [0, 2^64 -1].
+					// Bigint unsigned's max value is the same.
+					enc[targetCol.Name.Raw()] = uint64(s)
 				} else {
 					enc[targetCol.Name.Raw()] = s
 				}
@@ -437,33 +450,35 @@ func (c *conn) onDataTuple(
 
 // getTableMetadata fetches table metadata from the database
 // if binlog_row_metadata = minimal
-func (c *conn) getColNames(table ident.Table) ([][]byte, []uint64, error) {
+func (c *conn) getColNames(table ident.Table) ([][]byte, [][]byte, []uint64, error) {
 	cl, err := getConnection(c.config)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer cl.Close()
 	db, _ := table.Schema().Split()
 	log.Tracef("getting col names %s %s", db, table.Table().String())
 	res, err := cl.Execute(`
-		SELECT COLUMN_NAME, COLUMN_KEY='PRI'
+		SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY='PRI'
 		FROM INFORMATION_SCHEMA.COLUMNS
 		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
 		ORDER BY ORDINAL_POSITION;
 	`, db.Raw(), table.Table().Raw())
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	names := make([][]byte, 0, len(res.Values))
+	columnTypes := make([][]byte, 0, len(res.Values))
 	keys := make([]uint64, 0, len(res.Values))
 	for i, row := range res.Values {
 		names = append(names, row[0].AsString())
-		if row[1].AsInt64() == 1 {
+		columnTypes = append(columnTypes, row[1].AsString())
+		if row[2].AsInt64() == 1 {
 			keys = append(keys, uint64(i))
 		}
 	}
-	return names, keys, nil
+	return names, columnTypes, keys, nil
 }
 
 // onRelation updates the source database namespace mappings.
@@ -473,6 +488,7 @@ func (c *conn) onRelation(msg *replication.TableMapEvent) error {
 	targetTbl := ident.NewTable(c.target, ident.New(string(msg.Table)))
 	log.Tracef("Learned %+v", targetTbl)
 	columnNames, primaryKeys := msg.ColumnName, msg.PrimaryKey
+	columnTypes := make([][]byte, 0, msg.ColumnCount)
 	// In case we need to fetch the metadata directly from the
 	// source, we will do it the first time we see the table,
 	// to avoid calls for each row event (for older version of MySQL)
@@ -484,7 +500,7 @@ func (c *conn) onRelation(msg *replication.TableMapEvent) error {
 			ident.MustSchema(ident.New(string(msg.Schema)), ident.Public),
 			ident.New(string(msg.Table)))
 		var err error
-		columnNames, primaryKeys, err = c.getColNames(sourceTbl)
+		columnNames, columnTypes, primaryKeys, err = c.getColNames(sourceTbl)
 		if err != nil {
 			return err
 		}
@@ -502,14 +518,54 @@ func (c *conn) onRelation(msg *replication.TableMapEvent) error {
 	for idx, ctype := range msg.ColumnType {
 		_, found := primary[uint64(idx)]
 		colData[idx] = types.ColData{
-			Ignored: false,
-			Name:    ident.New(string(columnNames[idx])),
-			Primary: found,
-			Type:    fmt.Sprintf("%d", ctype),
+			Ignored:  false,
+			IsSigned: isColumnSigned(columnTypes, msg.SignednessBitmap, idx),
+			Name:     ident.New(string(columnNames[idx])),
+			Primary:  found,
+			Type:     fmt.Sprintf("%d", ctype),
 		}
 	}
 	c.columns.Put(targetTbl, colData)
 	return nil
+}
+
+func isColumnSigned(columnTypes [][]byte, bitmap []byte, columnIndex int) bool {
+	if len(columnTypes) > 0 {
+		return isColumnSignedFromColumnType(columnTypes, columnIndex)
+	}
+
+	return isColumnSignedFromBitmap(bitmap, columnIndex)
+}
+
+func isColumnSignedFromColumnType(columnTypes [][]byte, idx int) bool {
+	return !strings.Contains(strings.ToLower(string(columnTypes[idx])), "unsigned")
+}
+
+// The logic for this is that we start from bit 7, which is the most
+// significant bit in the byte (left most) and then index the relevant
+// bit relative to that. For example, if we do an index of 18, we will
+// land on bit 5 (3rd bit from the left) of the 3rd byte (index 2) in the bitmap.
+// Just a note that 0 means signed and 1 means unsigned in this scheme.
+func isColumnSignedFromBitmap(bitmap []byte, columnIndex int) bool {
+	// Determine the byte and bit position for the column
+	byteIndex := columnIndex / 8
+	bitPosition := columnIndex % 8
+
+	// Ensure the byte index is within the bitmap's range
+	if byteIndex >= len(bitmap) {
+		// Default to signed if the index is out of bounds.
+		// Safest default here, since `UNSIGNED` needs to be explicitly
+		// specified in the schema by the user.
+		return true
+	}
+
+	// Extract the specific bit
+	// If the bit is 0, it's unsigned; if it's 1, it's signed
+	// 0 means unsigned, 1 means signed
+	// This logic below assumes that the data is coming in in big-endian
+	// order instead of little-endian, hence why we do 7 - bit position
+	// instead of just shifting by bit position itself.
+	return (bitmap[byteIndex] & (1 << (7 - bitPosition))) == 0
 }
 
 var (

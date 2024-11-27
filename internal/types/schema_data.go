@@ -34,9 +34,10 @@ type ColData struct {
 	// A Parse function may be supplied to allow a datatype
 	// to be converted into a type more readily
 	// used by a target database driver.
-	Parse   func(any) (any, error) `json:"-"`
-	Primary bool                   `json:"primary,omitempty"` // PK column.
-	Type    string                 `json:"type,omitempty"`    // Data type of the column.
+	Parse    func(any) (any, error) `json:"-"`
+	Primary  bool                   `json:"primary,omitempty"` // PK column.
+	IsSigned bool                   // Whether the column is signed. Used in MySQL.
+	Type     string                 `json:"type,omitempty"` // Data type of the column.
 }
 
 // Equal returns true if the two ColData are equivalent under
