@@ -25,7 +25,8 @@
 set -ex
 
 # Variables that may be set by the workflow.
-PACKAGE_NAME=${PACKAGE_NAME:-replicator-local-dev} # replicator-linux-amd64[-target]
+PACKAGE_NAME=${PACKAGE_NAME:-replicator} # replicator
+PACKAGE_FULL_TARGET=${PACKAGE_FULL_TARGET:-local-dev} # linux-amd64[-target]
 PACKAGE_BIN_NAME=${PACKAGE_BIN_NAME:-replicator}   # replicator(.exe)
 UPLOAD_DIR=${UPLOAD_DIR:-upload}   # upload/
 EDGE_DIR="$UPLOAD_DIR/edge"
@@ -56,11 +57,15 @@ echo "$SHORT_VERSION" > "$WORK_DIR/VERSION.txt"
 tar zcvf "$WORK_DIR/package.tgz" --transform "s|^.*/|./$PACKAGE_NAME/|" "$WORK_DIR/$PACKAGE_BIN_NAME" ./README.md "$WORK_DIR/VERSION.txt"
 
 mkdir -p "$EDGE_DIR/sha" "$EDGE_DIR/branch"
-cp "$WORK_DIR/package.tgz" "$EDGE_DIR/sha/$PACKAGE_NAME-$SHORT_VERSION.tgz"
+cp "$WORK_DIR/package.tgz" "$EDGE_DIR/sha/$PACKAGE_NAME-$SHORT_VERSION.$PACKAGE_FULL_TARGET.tgz"
 if [ -n "$BRANCH_NAME" ]; then
-  cp "$WORK_DIR/package.tgz" "$EDGE_DIR/branch/$PACKAGE_NAME-$BRANCH_NAME.tgz"
+  cp "$WORK_DIR/package.tgz" "$EDGE_DIR/branch/$PACKAGE_NAME-$BRANCH_NAME.$PACKAGE_FULL_TARGET.tgz"
 fi
 TAG_REGEX="^v[0-9]+\.[0-9]+\.[0-9]+$"
 if [[ "$TAG_VERSION" =~ $TAG_REGEX ]]; then
-  cp "$WORK_DIR/package.tgz" "$UPLOAD_DIR/$PACKAGE_NAME-$TAG_VERSION.tgz"
+  TAG_VERSION="${TAG_VERSION#v}"
+  cp "$WORK_DIR/package.tgz" "$UPLOAD_DIR/$PACKAGE_NAME-$TAG_VERSION.$PACKAGE_FULL_TARGET.tgz"
+  # Whenever we release a tagged version, we also want to upload this as
+  # the "latest" version.
+  cp "$WORK_DIR/package.tgz" "$UPLOAD_DIR/$PACKAGE_NAME-latest.$PACKAGE_FULL_TARGET.tgz"
 fi

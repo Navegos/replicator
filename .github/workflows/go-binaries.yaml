@@ -29,6 +29,14 @@ jobs:
   binaries:
     name: Binaries
     runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    outputs:
+      output_linux_amd64: ${{ steps.link.outputs.output_linux_amd64_ }}
+      output_linux_amd64_oracle: ${{ steps.link.outputs.output_linux_amd64_oracle }}
+      output_linux_arm64: ${{ steps.link.outputs.output_linux_arm64_ }}
+      output_darwin_amd64: ${{ steps.link.outputs.output_darwin_amd64_ }}
+      output_darwin_arm64: ${{ steps.link.outputs.output_darwin_arm64_}}
+      output_windows_amd64: ${{ steps.link.outputs.output_windows_amd64_ }}
+      output_windows_arm64: ${{ steps.link.outputs.output_windows_arm64_ }}
     strategy:
       matrix:
         include:
@@ -63,8 +71,8 @@ jobs:
 
       - id: package
         env:
-          # replicator-linux-amd64[-target]
-          PACKAGE_NAME: "replicator-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.target && format('-{0}', matrix.target) || '' }}"
+          PACKAGE_NAME: "replicator"
+          PACKAGE_FULL_TARGET: "${{ matrix.os }}-${{ matrix.arch }}${{ matrix.target && format('-{0}', matrix.target) || '' }}"
           PACKAGE_BIN_NAME: "replicator${{ matrix.ext }}" # replicator.exe
           PACKAGE_BUILD_FLAGS: ${{ matrix.target && format('-tags target_{0}', matrix.target) || '' }}
           PACKAGE_CGO_ENABLED: ${{ matrix.cgo || '0' }}
@@ -105,8 +113,13 @@ jobs:
         env:
           UPLOAD_PATHS: ${{ steps.upload.outputs.uploaded }}
         run: |
+          os="${{ matrix.os }}"
+          arch="${{ matrix.arch }}"
+          target="${{ matrix.target }}"
+
           for f in ${UPLOAD_PATHS//,/ }; do # Split comma-separated list
             echo "[$(basename $f)](https://replicator.cockroachdb.com/$f)" >> $GITHUB_STEP_SUMMARY
+            echo "output_${os}_${arch}_${target}=https://replicator.cockroachdb.com/$f" >> "$GITHUB_OUTPUT"
           done
 
   # Aggregate the results of multiple jobs within this workflow into a
@@ -149,3 +162,85 @@ jobs:
               -f "context=$CONTEXT" \
               -f "target_url=$RUN_URL"
           fi
+
+  manifest:
+    name: Create release manifest
+    runs-on: ubuntu-latest
+    needs: # Update failure case below
+      - binaries
+    if: ${{ github.event_name == 'release' }}
+    env:
+      CONTEXT: Workflow Binaries
+      GH_TOKEN: ${{ github.token }}
+      MERGE_SHA: ${{ github.event.merge_group.head_sha }}
+      PR_SHA: ${{ github.event.pull_request.head.sha }}
+      STATE: success
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Failure
+        if: ${{ needs.binaries.result != 'success' }}
+        run: echo "STATE=failure" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+
+      - name: Pull the previous versions text file from GCP
+        run: |
+          curl --fail-with-body -o versions.txt -s 'https://replicator.cockroachdb.com/versions.txt' || cp ./climanifest/base-versions.txt versions.txt
+      # Copying the versions.txt file to the `artifacts` directory
+      # will result in it being synced to the GCS bucket.
+      - name: Write the versions text file with updated binary links
+        run: |
+          ls
+          mkdir -p ./artifacts
+          echo "" >> ./versions.txt
+          
+          echo '${{ toJSON(needs.binaries.outputs) }}' > outputs.json
+          for key in $(jq -r 'keys[]' outputs.json); do
+            link=$(jq -r --arg k "$key" '.[$k]' outputs.json)
+            # Remove "edge/sha" from the link since we just want it
+            # relative to the bucket for release versions.
+            link=$(echo "$link" | sed 's|/edge/sha||')
+
+            # Skip links that contain the string "latest"
+            if [[ "$link" == *"latest"* ]]; then
+                continue
+            fi
+
+            echo "$link" >> ./versions.txt
+          done
+
+          cp versions.txt ./artifacts/versions.txt
+          cat ./artifacts/versions.txt
+        shell: bash
+
+      - name: Download climanifest binary
+        run: |
+          curl --fail-with-body -o ./climanifest-ci -s 'https://molt.cockroachdb.com/utils/release/climanifest-linux-amd64'
+          chmod +x ./climanifest-ci
+
+      - name: Generate the manifest
+        run: |
+          ./climanifest-ci --version-file ./artifacts/versions.txt --output-file ./artifacts/versions.html --template-file "./climanifest/climanifestHtml.tmpl" --title "Replicator CLI Versions"
+          cat ./artifacts/versions.html
+      
+      - id: auth
+        name: Authenticate to GCP
+        # Only authenticate if we're on the main repo (i.e. have access
+        # to the secret).
+        if: "${{ vars.GCP_SERVICE_ACCOUNT }}"
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "${{ vars.WORKLOAD_IDENTITY_PROVIDER }}"
+          service_account: "${{ vars.GCP_SERVICE_ACCOUNT }}"
+
+      - name: Upload manifest
+        id: upload
+        uses: google-github-actions/upload-cloud-storage@v2
+        if: "${{ steps.auth.outputs.auth_token }}"
+        with:
+          path: "artifacts"
+          parent: false # Don't include the upload directory name
+          destination: ${{ vars.REPLICATOR_BUCKET }}/
+          process_gcloudignore: false # Suppress warning about missing .gcloudignore file
+      
+
