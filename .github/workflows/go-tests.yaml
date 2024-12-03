@@ -91,86 +91,112 @@ jobs:
       matrix:
         include:
           # These are our primary supported versions.
-          - cockroachdb: v24.1
-          - cockroachdb: v23.2
-          - cockroachdb: v23.1
+          - id: v24.1
+            cockroachdb: v24.1
+          - id: v23.2
+            cockroachdb: v23.2
+          - id: v23.1
+            cockroachdb: v23.1
 
           # Builds that are allowed to fail.
-          - cockroachdb: unstable
+          - id: unstable
+            cockroachdb: unstable
             experimental: true
 
           # Run a test with a separate CockroachDB source and target
           # instance to ensure there are no accidental dependencies
           # between the source, staging, and target schemas.
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-crdb-v24.1
+            cockroachdb: v24.1
             source: source-cockroachdb-v24.1
             sourceConn: "postgresql://root@127.0.0.1:5400/defaultdb?sslmode=disable"
             target: target-cockroachdb-v24.1
             targetConn: "postgresql://root@127.0.0.1:5401/defaultdb?sslmode=disable"
 
           # Tests for older CockroachDB versions as a source.
-          - cockroachdb: v24.1
+          - id: crdb-v21.1-to-crdb-v24.1
+            cockroachdb: v24.1
             source: source-cockroachdb-v21.1
             sourceConn: "postgresql://root@127.0.0.1:5400/defaultdb?sslmode=disable"
-          - cockroachdb: v24.1
+          - id: crdb-v21.2-to-crdb-v24.1
+            cockroachdb: v24.1
             source: source-cockroachdb-v21.2
             sourceConn: "postgresql://root@127.0.0.1:5400/defaultdb?sslmode=disable"
 
           # Tests for non-CRDB sources.
-          - cockroachdb: v24.1
+          - id: mysql-v8-source-integration
+            cockroachdb: v24.1
             integration: mysql-v8
-          - cockroachdb: v24.1
+          - id: mysql-v5.6-source-integration
+            cockroachdb: v24.1
             integration: mysql-v5.6
-          - cockroachdb: v24.1
+          - id: mysql-v5.7-source-integration
+            cockroachdb: v24.1
             integration: mysql-v5.7
-          - cockroachdb: v24.1
+          - id: mariadb-v10-source-integration
+            cockroachdb: v24.1
             integration: mysql-mariadb-v10
-          - cockroachdb: v24.1
+          - id: postgres-v11-source-integration
+            cockroachdb: v24.1
             integration: postgresql-v11
-          - cockroachdb: v24.1
+          - id: postgres-v12-source-integration
+            cockroachdb: v24.1
             integration: postgresql-v12
-          - cockroachdb: v24.1
+          - id: postgres-v13-source-integration
+            cockroachdb: v24.1
             integration: postgresql-v13
-          - cockroachdb: v24.1
+          - id: postgres-v14-source-integration
+            cockroachdb: v24.1
             integration: postgresql-v14
-          - cockroachdb: v24.1
+          - id: postgres-v15-source-integration
+            cockroachdb: v24.1
             integration: postgresql-v15
           # Test CRDB via a Kafka cluster
-          - cockroachdb: v24.1
+          - id: kafka-v7.6-source-integration
+            cockroachdb: v24.1
             integration: kafka-v7.6
             experimental: true # TODO: Investigate connection-refused errors
           # Test CRDB via an object store
-          - cockroachdb: v24.1
+          - id: objstore-source-integration
+            cockroachdb: v24.1
             integration: objstore
           # Test CRDB -> PostgreSQL for migration backfill use cases.
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-postgres-v11
+            cockroachdb: v24.1
             target: postgresql-v11
             targetConn: "postgres://postgres:SoupOrSecret@127.0.0.1:5432"
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-postgres-v12
+            cockroachdb: v24.1
             target: postgresql-v12
             targetConn: "postgres://postgres:SoupOrSecret@127.0.0.1:5432"
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-postgres-v13
+            cockroachdb: v24.1
             target: postgresql-v13
             targetConn: "postgres://postgres:SoupOrSecret@127.0.0.1:5432"
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-postgres-v14
+            cockroachdb: v24.1
             target: postgresql-v14
             targetConn: "postgres://postgres:SoupOrSecret@127.0.0.1:5432"
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-postgres-v15
+            cockroachdb: v24.1
             target: postgresql-v15
             targetConn: "postgres://postgres:SoupOrSecret@127.0.0.1:5432"
 
           # Test CRDB -> MySQL for migration backfill use cases.
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-mysql-v8
+            cockroachdb: v24.1
             target: mysql-v8
             targetConn: "mysql://root:SoupOrSecret@127.0.0.1:3306/mysql?sslmode=require"
 
           # Test CRDB -> MariaDB for migration backfill use cases.
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-mariadb-v10
+            cockroachdb: v24.1
             target: mysql-mariadb-v10
             targetConn: "mysql://root:SoupOrSecret@127.0.0.1:3306/mysql"
 
           # Test CRDB -> OracleDB for migration backfill use case.
-          - cockroachdb: v24.1
+          - id: crdb-v24.1-to-oracle-v21.3
+            cockroachdb: v24.1
             target: oracle-v21.3
             targetConn: "oracle://system:SoupOrSecret@127.0.0.1:1521/XEPDB1"
 
@@ -263,10 +289,10 @@ jobs:
       # available to the summarization step. The go test json is
       # uploaded as a developer convenience.
       - name: Stash test logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: integration-reports
+          name: integration-reports-${{ matrix.id }}
           path: |
             ${{ env.COVER_OUT }}
             ${{ env.DOCKER_LOGS_OUT }}
@@ -327,9 +353,11 @@ jobs:
     if: ${{ always() }}
     steps:
       - name: Download reports
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
-          name: integration-reports
+          pattern: integration-reports-*
+          merge-multiple: true
+      - run: ls .
       - name: Summarize
         uses: test-summary/action@v2
         with:
