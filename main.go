@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	golog "log"
 	"os"
 	"os/signal"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/field-eng-powertools/stopper"
+	"github.com/cockroachdb/replicator/internal/cmd/apiversion"
 	"github.com/cockroachdb/replicator/internal/cmd/dumphelp"
 	"github.com/cockroachdb/replicator/internal/cmd/dumptemplates"
 	"github.com/cockroachdb/replicator/internal/cmd/kafka"
@@ -122,6 +124,7 @@ func main() {
 		workload.Command(),
 		version.Command(),
 	)
+	root.Version = fmt.Sprintf("v%s", apiversion.ReplicatorVersion)
 
 	stop := stopper.WithContext(context.Background())
 	// Stop cleanly on interrupt.
