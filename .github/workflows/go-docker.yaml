@@ -53,6 +53,15 @@ jobs:
         uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      - name: Extract the ref or tag from the GITHUB_REF
+        id: extract
+        run: | 
+            echo "Ref: ${GITHUB_REF_NAME#v}"
+            echo "tag=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+      - name: Make version constant changes so it matches release version
+        if: ${{ github.event_name == 'release' }}
+        run: |
+          ./scripts/ci/replace-api-version.sh "${{steps.extract.outputs.tag}}"
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
