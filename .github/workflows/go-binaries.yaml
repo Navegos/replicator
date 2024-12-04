@@ -118,9 +118,14 @@ jobs:
           target="${{ matrix.target }}"
 
           for f in ${UPLOAD_PATHS//,/ }; do # Split comma-separated list
-            echo "[$(basename $f)](https://replicator.cockroachdb.com/$f)" >> $GITHUB_STEP_SUMMARY
+            echo "[$(basename $f)](https://replicator.cockroachdb.com/$f)" >> "$GITHUB_STEP_SUMMARY"
+            # Skip files that contain the string "latest"
+            if [[ "$f" == *"latest"* ]]; then
+                continue
+            fi
             echo "output_${os}_${arch}_${target}=https://replicator.cockroachdb.com/$f" >> "$GITHUB_OUTPUT"
           done
+        shell: bash
 
   # Aggregate the results of multiple jobs within this workflow into a
   # single status object that we can use for branch protection.
@@ -166,16 +171,12 @@ jobs:
   manifest:
     name: Create release manifest
     runs-on: ubuntu-latest
-    needs: # Update failure case below
+    needs:
       - binaries
     if: ${{ github.event_name == 'release' }}
     env:
-      CONTEXT: Workflow Binaries
       GH_TOKEN: ${{ github.token }}
-      MERGE_SHA: ${{ github.event.merge_group.head_sha }}
-      PR_SHA: ${{ github.event.pull_request.head.sha }}
       STATE: success
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Failure
         if: ${{ needs.binaries.result != 'success' }}
@@ -190,7 +191,6 @@ jobs:
       # will result in it being synced to the GCS bucket.
       - name: Write the versions text file with updated binary links
         run: |
-          ls
           mkdir -p ./artifacts
           echo "" >> ./versions.txt
           
