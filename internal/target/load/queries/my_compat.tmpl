@@ -1,0 +1,49 @@
+{{- /*gotype: github.com/cockroachdb/replicator/internal/target/load.demand*/ -}}
+{{- /*
+Uses the given PK parameters for each row to grab column data from the corresponding target rows.
+Returns the index of extant rows, along with the requested column values from target rows.
+
+Rewrite of my.tmpl query to be compatible with older versions of MySQL that
+don't support CTEs or VALUES() to create temporary tables. Otherwise, use my.tmpl.
+
+NOTE: be careful when using this for queries with string PKs for MySQL 5.X, as the
+database driver connection collation MUST match the collation for the server. See stdpool/my.go.
+
+Example template instance:
+
+(1)    SELECT k.__idx__, t.data0, t.data1, t.data2
+(2)    FROM (
+         SELECT ? as __idx__, ? as pk0, ? as pk1
+         UNION SELECT ?,?,?
+         UNION SELECT ?,?,?
+       ) AS k
+(3)    JOIN my_table t ON (t.pk0 = k.pk0 AND t.pk1 = k.pk1);
+*/ -}}
+
+{{- /* (1) Resulting rows should have an index from 0 and the missing data columns to
+            be filled in from the target table. */ -}}
+SELECT k.__idx__ {{- sp -}}
+{{- range $colIdx, $col := $.SelectCols -}}
+  , {{- sp -}} t.{{- $col.Name -}}
+{{- end -}}
+
+{{- /* (2) Generate a temporary table of rows, each containing an index from 0 and pks
+            corresponding to the target table data rows we want to grab columns from. */}}
+FROM ({{- nl -}}
+{{- range $rowIdx, $rowData := $.PKData -}}
+  {{- if $rowIdx -}} {{- nl -}} UNION {{ end -}}
+  SELECT {{$rowIdx}} AS __idx__
+  {{- range $colIdx, $colValue := $rowData -}}
+    , ? {{- if not $rowIdx }} AS {{ (index $.PKs $colIdx).Name }} {{- end -}}
+  {{- end -}}
+{{- end }}
+) AS k
+
+{{- /* (3) Join our rows with missing data columns to the target table rows that have the
+            the data we need, so we can select those missing data columns. */}}
+JOIN {{ $.Table }} t ON (
+{{- range $colIdx, $col := $.PKs -}}
+  {{- if $colIdx }} AND {{ end -}}
+  k.{{ $col.Name }} = t.{{ $col.Name }}
+{{- end -}}
+)

@@ -66,7 +66,12 @@ func TestExternalTemplates(t *testing.T) {
 	r.ErrorContains(err, QueryDir)
 }
 
+// TestQueryTemplatesMy tests generated query templates against golden-output
+// in apply/testdata/my/.
 func TestQueryTemplatesMy(t *testing.T) {
+	defaultMySQLVersion := "8.4.4" // Newer version of MySQL.
+	oldMySQLVersion := "8.0.0"     // Test older versions of MySQL with unsupported features like CTEs.
+
 	global := &templateGlobal{
 		cols: []types.ColData{
 			{
@@ -106,9 +111,14 @@ func TestQueryTemplatesMy(t *testing.T) {
 			ident.New("table")),
 	}
 
+	// 'Compat' test cases test compatibility query output for older MySQL versions.
 	tcs := []*templateTestCase{
 		{
 			name: "base",
+		},
+		{
+			name:            "baseCompat",
+			databaseVersion: oldMySQLVersion,
 		},
 		{
 			name: "cas",
@@ -136,6 +146,34 @@ func TestQueryTemplatesMy(t *testing.T) {
 			},
 		},
 		{
+			name: "casCompat",
+			cfg: &applycfg.Config{
+				CASColumns: []ident.Ident{ident.New("val1"), ident.New("val0")},
+			},
+			databaseVersion: oldMySQLVersion,
+		},
+		{
+			name: "deadlineCompat",
+			cfg: &applycfg.Config{
+				Deadlines: ident.MapOf[time.Duration](
+					ident.New("val1"), time.Second,
+					ident.New("val0"), time.Hour,
+				),
+			},
+			databaseVersion: oldMySQLVersion,
+		},
+		{
+			name: "casDeadlineCompat",
+			cfg: &applycfg.Config{
+				CASColumns: []ident.Ident{ident.New("val1"), ident.New("val0")},
+				Deadlines: ident.MapOf[time.Duration](
+					ident.New("val0"), time.Hour,
+					ident.New("val1"), time.Second,
+				),
+			},
+			databaseVersion: oldMySQLVersion,
+		},
+		{
 			// This ignore setup results in a PK-only table.
 			name: "ignore",
 			cfg: &applycfg.Config{
@@ -143,6 +181,16 @@ func TestQueryTemplatesMy(t *testing.T) {
 					"val0", true,
 					"val1", true,
 				)},
+		},
+		{
+			// This ignore setup results in a PK-only table.
+			name: "ignoreCompat",
+			cfg: &applycfg.Config{
+				Ignore: ident.MapOf[bool](
+					"val0", true,
+					"val1", true,
+				)},
+			databaseVersion: oldMySQLVersion,
 		},
 		{
 			// Changing the source names should have no effect on the
@@ -155,6 +203,19 @@ func TestQueryTemplatesMy(t *testing.T) {
 					ident.New("unknown"), ident.New("is ok"),
 				),
 			},
+		},
+		{
+			// Changing the source names should have no effect on the
+			// SQL that gets generated; we only care about the different
+			// value when looking up values in the incoming mutation.
+			name: "source names compat",
+			cfg: &applycfg.Config{
+				SourceNames: ident.MapOf[applycfg.SourceColumn](
+					ident.New("val1"), ident.New("val1Renamed"),
+					ident.New("unknown"), ident.New("is ok"),
+				),
+			},
+			databaseVersion: oldMySQLVersion,
 		},
 		{
 			// Verify user-configured expressions, with zero, one, and
@@ -172,10 +233,32 @@ func TestQueryTemplatesMy(t *testing.T) {
 				),
 			},
 		},
+		{
+			// Verify user-configured expressions, with zero, one, and
+			// multiple uses of the substitution position.
+			name: "exprCompat",
+			cfg: &applycfg.Config{
+				Exprs: ident.MapOf[string](
+					ident.New("val0"), `'fixed'`, // Doesn't consume a parameter slot.
+					ident.New("val1"), `$0||'foobar'`,
+					ident.New("pk1"), `$0+$0`,
+				),
+				Ignore: ident.MapOf[bool](
+					ident.New("geom"), true,
+					ident.New("geog"), true,
+				),
+			},
+			databaseVersion: oldMySQLVersion,
+		},
 	}
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.databaseVersion == "" {
+				// Assume a recent version of MySQL for the current test case if none is specified.
+				tc.databaseVersion = defaultMySQLVersion
+			}
+
 			checkTemplate(t, global, tc)
 		})
 	}
@@ -461,8 +544,9 @@ type templateGlobal struct {
 }
 
 type templateTestCase struct {
-	name string
-	cfg  *applycfg.Config
+	name            string
+	cfg             *applycfg.Config
+	databaseVersion string // Used to test that specialized templates for older DB versions are used.
 }
 
 func checkTemplate(t *testing.T, global *templateGlobal, tc *templateTestCase) {
@@ -477,8 +561,7 @@ func checkTemplate(t *testing.T, global *templateGlobal, tc *templateTestCase) {
 	if global.product == types.ProductCockroachDB {
 		hint = "@{NO_FULL_SCAN}"
 	}
-
-	mapping, err := newColumnMapping(cfg, global.cols, global.product, ident.WithHint(global.tableID, hint))
+	mapping, err := newColumnMapping(cfg, global.cols, global.product, tc.databaseVersion, ident.WithHint(global.tableID, hint))
 	r.NoError(err)
 
 	tmpls, err := newTemplates(mapping)

@@ -3,13 +3,22 @@
 This uses a CTE that sends the PKs that we wish to select and
 returns the index of extant rows, along with the requested values..
 
-WITH
-k ( __idx__, pk0, pk1 ) AS (VALUES ROW(?,?), ROW(?,?), ROW(?,?))
-SELECT k.__idx__, t.data0, t.data1, t.data2
-FROM my_table t
-JOIN k USING (pk0, pk1)
+Example template instance:
+
+(1) WITH k (
+      __idx__, pk0, pk1) AS (VALUES
+      ROW(0,?,?),
+      ROW(1,?,?),
+      ROW(2,?,?)
+    )
+(2) SELECT k.__idx__, t.data0, t.data1, t.data2
+    FROM k
+(3) JOIN my_table t ON (t.pk0 = k.pk0 AND t.pk1 = k.pk1)
+
 */ -}}
 
+{{- /* (1) Generate a temporary table with a CTE, where each row has an index from 0,
+            and their primary key columns to join with the target table. */ -}}
 WITH k (
   __idx__
   {{- range $colIdx, $col := $.PKs -}}
@@ -27,11 +36,17 @@ ROW(
 )
 {{- end -}}
 )
+
+{{- /* (2) Resulting rows should have an index from 0 and the missing data columns to
+            be filled in from the corresponding target table rows. */}}
 SELECT k.__idx__ {{- sp -}}
 {{- range $colIdx, $col := $.SelectCols -}}
   , {{- sp -}} t.{{- $col.Name -}}
 {{- end -}} {{- nl -}}
 FROM k
+
+{{- /* (3) Join our rows with missing data columns to the target table rows that have the
+            the data we need, so we can select those missing data columns. */}}
 JOIN {{ $.Table }} t ON (
 {{- range $colIdx, $col := $.PKs -}}
   {{- if $colIdx }} AND {{ end -}}

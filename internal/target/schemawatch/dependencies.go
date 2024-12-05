@@ -93,6 +93,60 @@ UNION ALL
 SELECT * FROM refs
 `
 
+// This query expects the same result set as the 'depOrderTemplateMySQL' query, but it does not
+// use CTEs, as older MySQL versions do not support them (< v8.0.1). Creates a mapping of
+// child to parent tables as rows in the result set.
+// Parameters:
+// - $1: Table catalog (always "def" in MySQL).
+// - $2: Table schema ("my_database").
+// - $3: Table catalog (same as $1).
+// - $4: Table schema (same as $2).
+// The current MySQL driver can't reuse the same placeholder argument multiple times
+// in the query, so we pass in the same argument twice as a compromise.
+//
+// The first 'seeds' query obtains a dummy row for each table in the schema,
+// to ensure tables without children are included.
+//
+// The second 'refs' query obtains child to parent mappings for each table in the schema.
+// 'q' is the catalog and schema to query.
+const depOrderTemplateMySQLCompatibility = `
+-- seeds
+SELECT
+    NULL AS child_catalog,
+    NULL AS child_schema,
+    NULL AS child_table_name,
+    table_catalog AS parent_catalog,
+    table_schema AS parent_schema,
+    table_name AS parent_table_name
+FROM
+    information_schema.tables
+JOIN (SELECT ? AS table_catalog, ? AS table_schema) AS q USING (table_catalog, table_schema)
+WHERE
+    table_type = 'BASE TABLE'
+
+UNION ALL
+
+-- refs
+SELECT
+    constraint_catalog AS child_catalog,
+    constraint_schema AS child_schema,
+    table_name AS child_table_name,
+    unique_constraint_catalog AS parent_catalog,
+    unique_constraint_schema AS parent_schema,
+    referenced_table_name AS parent_table_name
+FROM
+    information_schema.referential_constraints AS r
+JOIN (SELECT ? AS table_catalog, ? AS table_schema) as q ON
+    r.unique_constraint_catalog = q.table_catalog
+    AND
+    (
+        r.unique_constraint_schema = q.table_schema
+        OR r.constraint_schema = q.table_schema
+    )
+WHERE
+    (constraint_schema, table_name) != (unique_constraint_schema, referenced_table_name)
+`
+
 // depOrderTemplateOra creates a mapping of child to parent tables.
 //
 // - owner: The owner of the tables to query ("my_application")
@@ -247,14 +301,39 @@ func getDependencyRefs(
 		stmt = fmt.Sprintf(depOrderTemplatePg, parts[0])
 		args = []any{parts[0].Raw(), parts[1].Raw(), legacyHack}
 
-	case types.ProductMariaDB, types.ProductMySQL:
+	case types.ProductMariaDB:
 		parts := db.Idents(make([]ident.Ident, 0, 1))
 		if len(parts) != 1 {
-			return nil, errors.Errorf("expecting one schema parts, had %d", len(parts))
+			return nil, errors.Errorf("expecting one schema part, had %d", len(parts))
 		}
 		stmt = depOrderTemplateMySQL
 		// Catalog names are hardcoded to "def" in MySQL.
 		args = []any{`def`, parts[0].Raw()}
+
+	case types.ProductMySQL:
+		parts := db.Idents(make([]ident.Ident, 0, 1))
+		if len(parts) != 1 {
+			return nil, errors.Errorf("expecting one schema part, had %d", len(parts))
+		}
+		// Catalog names are hardcoded to "def" in MySQL.
+		catalogName := "def"
+		schemaName := parts[0].Raw()
+
+		needsCompatQueries, err := stdpool.MySQLVersionNeedsCompatibilityQueries(tx.Version)
+		if err != nil {
+			return nil, err
+		}
+
+		if needsCompatQueries {
+			// Support older versions of MySQL with unsupported query features like CTEs.
+			stmt = depOrderTemplateMySQLCompatibility
+			// The current MySQL driver can't reuse the same placeholder argument multiple times
+			// in the query, so we pass in the same argument twice as a compromise.
+			args = []any{catalogName, schemaName, catalogName, schemaName}
+		} else {
+			stmt = depOrderTemplateMySQL
+			args = []any{catalogName, schemaName}
+		}
 
 	case types.ProductOracle:
 		stmt = depOrderTemplateOra

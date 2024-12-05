@@ -27,6 +27,7 @@ import (
 
 	"github.com/cockroachdb/replicator/internal/types"
 	"github.com/cockroachdb/replicator/internal/util/ident"
+	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/pkg/errors"
 )
 
@@ -103,7 +104,23 @@ func (d *dlqs) Get(ctx context.Context, target ident.Schema, name string) (types
 	}
 	cols, ok := watcher.Get().Columns.Get(tbl)
 	if !ok {
-		msg := dlqTableMissing + BasicSchemas[d.targetPool.Product]
+		// Default schema suggestion to provide to the user based on the product.
+		schemaSuggestionForUser := BasicSchemas[d.targetPool.Product]
+
+		// If a MySQL target, check if the version is old. If so, suggest a different schema
+		// to the user that is compatible with MySQL 5.7.
+		if d.targetPool.Product == types.ProductMySQL {
+			supportsColDefaultExpressions, err := stdpool.MySQLVersionSupportsExpressionsForDefaultColVals(d.targetPool.Version)
+			if err != nil {
+				return nil, err
+			}
+
+			if !supportsColDefaultExpressions {
+				schemaSuggestionForUser = BasicMySQL5_7Schema
+			}
+		}
+
+		msg := dlqTableMissing + schemaSuggestionForUser
 		return nil, errors.Errorf(msg, tbl)
 	}
 

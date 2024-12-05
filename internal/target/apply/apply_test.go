@@ -17,6 +17,7 @@
 package apply_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -654,7 +655,6 @@ var (
 			sourceType: `GEOGRAPHY`,
 			columnType: `GEOMETRY`,
 			sqlValue:   `0101000020E6100000000000000000F03F0000000000000040`,
-			expectJSON: `{"coordinates":[1.0,2.0],"type":"Point"}`,
 		},
 		{name: `geometry`, columnType: `GEOMETRY`, sqlValue: `010100000075029A081B9A5DC0F085C954C1F84040`},
 		{name: `int_null`, columnType: `INT`},
@@ -775,7 +775,7 @@ var (
 		{name: `text`, sourceType: `string`, columnType: `TEXT(100)`, sqlValue: `a1b2c3`},
 		{name: `time_null`, columnType: `TIME`},
 		{name: `time`, columnType: `TIME(6)`, sqlValue: `01:23:45.123456`, indexable: true},
-		{name: `timestamp_null`, columnType: `TIMESTAMP`},
+		{name: `timestamp_null`, columnType: `TIMESTAMP NULL`},
 		{
 			name:       `timestamp`,
 			columnType: `TIMESTAMP`,
@@ -808,7 +808,15 @@ var (
 		{name: `varchar_null`, columnType: `VARCHAR(255)`},
 		{name: `varchar`, columnType: `VARCHAR(255)`, sqlValue: `a1b2c3`, indexable: true},
 		{name: `year_null`, sourceType: `string`, columnType: `YEAR`},
-		{name: `year`, sourceType: `string`, columnType: `YEAR`, sqlValue: `2016`, expectJSON: `2016`, indexable: true},
+		{
+			name:       `year`,
+			sourceType: `string`,
+			columnType: `YEAR`,
+			sqlValue:   `2016`,
+			expectJSON: `"2016"`,
+			indexable:  true,
+			readBackQ:  `SELECT val from %s`,
+		},
 	}
 	oraDataTypeTests = []dataTypeTestCase{
 		{
@@ -1197,8 +1205,261 @@ func normalizeJSON(data string) (string, error) {
 	if err := dec.Decode(&value); err != nil {
 		return "", err
 	}
+	value = processJSON(value)
 	buf, err := json.Marshal(value)
 	return string(buf), err
+}
+
+// Takes a JSON object and recusively processes each
+// property to ensure standardardized formatting for different data types.
+// For instance, ensuring that all number properties don't have trailing zeros.
+func processJSON(obj interface{}) interface{} {
+	switch v := obj.(type) {
+	case map[string]interface{}:
+		for key, value := range v {
+			v[key] = processJSON(value)
+		}
+	case []interface{}:
+		for i, value := range v {
+			v[i] = processJSON(value)
+		}
+	case json.Number:
+		return formatNumber(v)
+	default:
+		// TODO: add other standardized formats for other JSON data types like Dates.
+		return v
+	}
+	return obj
+}
+
+// Puts a json.Number string in standardized format
+// so that its string can be compared for equality without
+// trailing zeros affecting the comparison result.\
+func formatNumber(num json.Number) (formattedNum json.Number) {
+	formattedNum = num
+	numStr := formattedNum.String()
+	if strings.Contains(numStr, ".") {
+		// Remove trailing zeros and the decimal point if necessary
+		numStr = strings.TrimRight(numStr, "0")
+		numStr = strings.TrimRight(numStr, ".")
+		// Convert back to a json.Number instead of a string so that json.Marshal encoding doesn't
+		// put quotation marks around the resulting encoded JSON string property
+		// since it thinks that it is a string and not a json.Number.
+		formattedNum = json.Number(numStr)
+	}
+	return formattedNum
+}
+
+// TestNormalizeJSON tests that normalizeJSON() correctly puts given
+// JSON object strings into standardized format. This includes
+// re-ordering the keys alphabetically, removing trailing zeros from numbers,
+// and compacting the resulting JSON object string into a single line without
+// unnecessary white spaces.
+func TestNormalizeJSON(t *testing.T) {
+	tests := []struct {
+		name         string
+		jsonArg      string
+		expectedJSON string
+		wantErr      bool
+	}{
+		{
+			// Reorder the JSON keys alphabetically, remove trailing zeros from numbers, and
+			// compact the JSON onto one line without whitespaces.
+			name: "long JSON with nested trailing zero properties",
+			jsonArg: `{
+				"string": "Lola",
+				"bool": true,
+				"number": 547.000,
+				"float": 123.456000,
+				"array": [
+					"lola",
+					true,
+					547.00,
+					123.45600,
+					[
+						"lola",
+						true,
+						547.00,
+						123.45600
+					],
+					{
+						"string": "Lola",
+						"bool": true,
+						"number": 547.00,
+						"float": 123.45600,
+						"array": [
+							"lola",
+							true,
+							547.00,
+							123.45600,
+							[
+								"lola",
+								true,
+								547.00,
+								123.45600
+							]
+						]
+					}
+				],
+				"map": {
+					"string": "Lola",
+					"bool": true,
+					"number": 547.00,
+					"float": 123.45600,
+					"array": [
+						"lola",
+						true,
+						547.00,
+						123.45600,
+						[
+							"lola",
+							true,
+							547.00,
+							123.45600
+						],
+						{
+							"string": "Lola",
+							"bool": true,
+							"number": 547.00,
+							"float": 123.45600,
+							"array": [
+								"lola",
+								true,
+								547.00,
+								123.45600,
+								[
+									"lola",
+									true,
+									547.00,
+									123.45600
+								]
+							]
+						}
+					]
+				}
+			}`,
+			expectedJSON: `{
+				"array": [
+					"lola",
+					true,
+					547,
+					123.456,
+					[
+						"lola",
+						true,
+						547,
+						123.456
+					],
+					{
+						"array": [
+							"lola",
+							true,
+							547,
+							123.456,
+							[
+								"lola",
+								true,
+								547,
+								123.456
+							]
+						],
+						"bool": true,
+						"float": 123.456,
+						"number": 547,
+						"string": "Lola"
+					}
+				],
+				"bool": true,
+				"float": 123.456,
+				"map": {
+					"array": [
+						"lola",
+						true,
+						547,
+						123.456,
+						[
+							"lola",
+							true,
+							547,
+							123.456
+						],
+						{
+							"array": [
+								"lola",
+								true,
+								547,
+								123.456,
+								[
+									"lola",
+									true,
+									547,
+									123.456
+								]
+							],
+							"bool": true,
+							"float": 123.456,
+							"number": 547,
+							"string": "Lola"
+						}
+					],
+					"bool": true,
+					"float": 123.456,
+					"number": 547,
+					"string": "Lola"
+				},
+				"number": 547,
+				"string": "Lola"
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "simple flat json with number fields",
+			jsonArg: `{
+				"trailingZerosAndNonZeros": 8.712300,
+				"trailingZeros": 8.00000,
+				"zeroAndTrailingZero": 0.0,
+				"zero": 0,
+				"trailingZerosNoDecimal": 12345000
+			}`,
+			expectedJSON: `{
+				"trailingZeros": 8,
+				"trailingZerosAndNonZeros": 8.7123,
+				"trailingZerosNoDecimal": 12345000,
+				"zero": 0,
+				"zeroAndTrailingZero": 0
+			}`,
+			wantErr: false,
+		},
+		{
+			name:         "just a number",
+			jsonArg:      `456.000`,
+			expectedJSON: `456`,
+			wantErr:      false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actualJSON, err := normalizeJSON(tc.jsonArg)
+			hasError := err != nil
+
+			// Compact the expected JSON onto a single line, since we expect that
+			// normalizeJSON will return a compacted JSON string. This allows
+			// the expectedJSON for each test case to be formatted for readability
+			// with multiline strings without affecting the string content and test outcome.
+			var compactedExpectedJSONBuf bytes.Buffer
+			err = json.Compact(&compactedExpectedJSONBuf, []byte(tc.expectedJSON))
+			require.NoError(t, err)
+			expectedJSON := compactedExpectedJSONBuf.String()
+
+			if hasError != tc.wantErr {
+				t.Errorf("normalizeJSON() error = %v, wantErr %v", err, tc.wantErr)
+				return
+			}
+			if actualJSON != expectedJSON {
+				t.Errorf("normalizeJSON() = %v, want %v", actualJSON, expectedJSON)
+			}
+		})
+	}
 }
 
 // This tests compare-and-set behaviors.

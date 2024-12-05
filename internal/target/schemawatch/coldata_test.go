@@ -26,11 +26,14 @@ import (
 	"github.com/cockroachdb/replicator/internal/sinktest/all"
 	"github.com/cockroachdb/replicator/internal/types"
 	"github.com/cockroachdb/replicator/internal/util/ident"
+	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetColumns(t *testing.T) {
 	a := assert.New(t)
+	r := require.New(t)
 
 	fixture, err := all.NewFixture(t)
 	if !a.NoError(err) {
@@ -38,6 +41,13 @@ func TestGetColumns(t *testing.T) {
 	}
 
 	ctx := fixture.Context
+
+	// Only execute specific tests that support expressions in default column values.
+	var mySQLVersionSupportsExpressionsForDefaultColVals bool
+	if fixture.TargetPool.Product == types.ProductMySQL {
+		mySQLVersionSupportsExpressionsForDefaultColVals, err = stdpool.MySQLVersionSupportsExpressionsForDefaultColVals(fixture.TargetPool.Version)
+		r.NoError(err)
+	}
 
 	type testcase struct {
 		check       func(*testing.T, []types.ColData) // Optional extra test code
@@ -368,6 +378,35 @@ func TestGetColumns(t *testing.T) {
 					}
 					if ident.Equal(col.Name, ident.New("f")) {
 						assert.Contains(t, col.DefaultExpr, `replace('Hello World!', ' ', '+')`)
+						return
+					}
+				}
+				assert.Fail(t, "did not find the required columns")
+			},
+			skip: !mySQLVersionSupportsExpressionsForDefaultColVals,
+		},
+		// Check that default column value information can be introspected
+		// for MySQL versions that do not support expressions for default column values.
+		{
+			products: []types.Product{types.ProductMySQL},
+			tableSchema: `a INT PRIMARY KEY,
+			b VARCHAR(2048) DEFAULT 'Hello''World!',
+			c INT           DEFAULT 1,
+			d FLOAT         DEFAULT 1.5`,
+			primaryKeys: []string{"a"},
+			dataCols:    []string{"b", "c", "d"},
+			check: func(t *testing.T, data []types.ColData) {
+				for _, col := range data {
+					if ident.Equal(col.Name, ident.New("b")) {
+						assert.Contains(t, col.DefaultExpr, `'Hello\'World!'`)
+						return
+					}
+					if ident.Equal(col.Name, ident.New("c")) {
+						assert.Contains(t, col.DefaultExpr, `1`)
+						return
+					}
+					if ident.Equal(col.Name, ident.New("d")) {
+						assert.Contains(t, col.DefaultExpr, `1.5`)
 						return
 					}
 				}

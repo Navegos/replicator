@@ -36,6 +36,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/util/diag"
 	"github.com/cockroachdb/replicator/internal/util/hlc"
 	"github.com/cockroachdb/replicator/internal/util/ident"
+	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -76,9 +77,23 @@ func (f *Fixture) Applier(ctx context.Context, table ident.Table) func([]types.M
 // CreateDLQTable ensures that a DLQ table exists. The name of the table
 // is returned so that tests may inspect it.
 func (f *Fixture) CreateDLQTable(ctx context.Context) (ident.Table, error) {
-	create := dlq.BasicSchemas[f.TargetPool.Product]
+	createDLQTableSchema := dlq.BasicSchemas[f.TargetPool.Product]
+
+	// If a MySQL target, check if the version is old. If so, use a different test DLQ table schema
+	// that is compatible with older versions (no expressions for default column values).
+	if f.TargetPool.Product == types.ProductMySQL {
+		supportsColDefaultExpressions, err := stdpool.MySQLVersionSupportsExpressionsForDefaultColVals(f.TargetPool.Version)
+		if err != nil {
+			return ident.Table{}, err
+		}
+
+		if !supportsColDefaultExpressions {
+			createDLQTableSchema = dlq.BasicMySQL5_7Schema
+		}
+	}
+
 	dlqTable := ident.NewTable(f.TargetSchema.Schema(), f.DLQConfig.TableName)
-	if _, err := f.TargetPool.ExecContext(ctx, fmt.Sprintf(create, dlqTable)); err != nil {
+	if _, err := f.TargetPool.ExecContext(ctx, fmt.Sprintf(createDLQTableSchema, dlqTable)); err != nil {
 		return ident.Table{}, errors.WithStack(err)
 	}
 	if err := f.Watcher.Refresh(ctx, f.TargetPool); err != nil {

@@ -23,6 +23,7 @@ import (
 	sqldriver "database/sql/driver"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -34,6 +35,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/mod/semver"
 )
 
 // See also:
@@ -146,29 +148,87 @@ func OpenMySQLAsTarget(
 
 	ping:
 		if err := ret.Ping(); err != nil {
-			// For some errors, we retry.
+			// For some ping errors, we retry, since some tests will wait longer for DB startup.
 			if tc.WaitForStartup && isMySQLStartupError(err) {
 				log.WithError(err).Info("waiting for database to become ready")
 				select {
 				case <-ctx.Done():
-					return nil, ctx.Err()
+					return nil, ctx.Err() // Waiting too long for DB startup (test timeout); stop trying to ping.
 				case <-time.After(10 * time.Second):
-					goto ping
+					goto ping // Ping again after waiting 10 seconds.
 				}
 			}
 			transportError = err
 			_ = ret.Close()
-			// Try a different option.
+			// Try a different tlsConfig.
 			continue
 		}
 		// Testing that connection is usable.
 		if err := ret.QueryRow("SELECT VERSION();").Scan(&ret.Version); err != nil {
 			return nil, errors.Wrap(err, "could not query version")
 		}
-		log.Infof("Version %s.", ret.Version)
+
+		var mySQLVersionUsesLatinDefaultCollation bool
 		if strings.Contains(ret.Version, "MariaDB") {
 			ret.PoolInfo.Product = types.ProductMariaDB
+		} else {
+			// Older MySQL versions (< 8.0.1) may use latin1_swedish_ci as the
+			// default collation_server value, which may differ from the
+			// Go-MySQL-Driver default (utf8mb4_general_ci), so check and set the collation
+			// for subsequent driver connections accordingly.
+			mySQLVersionUsesLatinDefaultCollation, err = MySQLVersionDefaultCollationIsLatin1(ret.Version)
+			if err != nil {
+				return nil, errors.Wrap(err, "could not parse MySQL version")
+			}
 		}
+
+		if mySQLVersionUsesLatinDefaultCollation {
+			// Using an older version of MySQL, be sure to use the same collation
+			// as the connected-to database for driver connections to avoid illegal
+			// collation mixing errors with queries.
+			// If we run into collation issues in the future with newer versions of MySQL,
+			// we could possibly reuse this same collation consistency logic, regardless of the version.
+			var collation string
+			err = ret.QueryRow("SELECT @@collation_database").Scan(&collation)
+			if err != nil || collation == "" {
+				return nil, errors.Wrap(err, "could not query collation_database")
+			}
+			cfg.Collation = collation
+
+			// Re-open the DB to use the new collation config option.
+			_ = ret.Close()
+			connector, err = mysql.NewConnector(cfg)
+			if err != nil {
+				log.WithError(err).Trace("failed to connect to database server")
+				transportError = err
+				// Try a different tlsConfig.
+				continue
+			}
+			ret = &types.TargetPool{
+				DB: sql.OpenDB(connector),
+				PoolInfo: types.PoolInfo{
+					ConnectionString: connectString,
+					Product:          types.ProductMySQL,
+
+					ErrCode:      myErrCode,
+					IsDeferrable: myErrDeferrable,
+					ShouldRetry:  myErrRetryable,
+				},
+			}
+			ctx.Defer(func() { _ = ret.Close() })
+
+			// Test the connection.
+			if err := ret.Ping(); err != nil {
+				transportError = err
+				_ = ret.Close()
+				// Try a different tlsConfig.
+				continue
+			}
+			if err := ret.QueryRow("SELECT VERSION();").Scan(&ret.Version); err != nil {
+				return nil, errors.Wrap(err, "could not query version")
+			}
+		}
+		log.Infof("Version %s.", ret.Version)
 		if err := setTableHint(ret.Info()); err != nil {
 			return nil, err
 		}
@@ -224,4 +284,70 @@ func getConnString(url *url.URL, tlsConfigName string, config *tls.Config) (stri
 		return baseSQLString, nil
 	}
 	return fmt.Sprintf("%s&tls=%s", baseSQLString, tlsConfigName), nil
+}
+
+// MySQLVersionNeedsCompatibilityQueries returns true if the provided MySQL version
+// needs to use template queries that are compatible with older versions (X_compat.tmpl files).
+func MySQLVersionNeedsCompatibilityQueries(version string) (bool, error) {
+	supportsCTEs, err := MySQLVersionSupportsCTEs(version)
+	return !supportsCTEs, err
+}
+
+// MySQLVersionSupportsCTEs returns true if the provided MySQL version supports common table expressions (CTEs).
+func MySQLVersionSupportsCTEs(version string) (bool, error) {
+	return MySQLMinVersion(version, "8.0.1")
+}
+
+// MySQLVersionSupportsExpressionsForDefaultColVals returns true if the provided MySQL version supports
+// expressions for default column values.
+func MySQLVersionSupportsExpressionsForDefaultColVals(version string) (bool, error) {
+	return MySQLMinVersion(version, "8.0.13")
+}
+
+// MySQLVersionDefaultCollationIsLatin1 returns true if the provided MySQL version uses character
+// set and collation (latin1, latin1_swedish_ci) by default (older versions).
+func MySQLVersionDefaultCollationIsLatin1(version string) (bool, error) {
+	defaultCharSetIsUTF8, err := MySQLMinVersion(version, "8.0.1")
+	return !defaultCharSetIsUTF8, err
+}
+
+// MySQLMinVersion returns true if the MySQL version string returned by VERSION()
+// is at least the specified minimum.
+//
+// Ex: 'version' == "8.0.23-log", 'minVersion' == "8.0.3-standard", returns true.
+func MySQLMinVersion(version string, minVersion string) (bool, error) {
+	semverVersion, err := MySQLSemVer(version)
+	if err != nil {
+		return false, err
+	}
+	semverMinVersion, err := MySQLSemVer(minVersion)
+	if err != nil {
+		return false, err
+	}
+
+	if !semver.IsValid(semverVersion) {
+		return false, errors.Errorf("extracted semver is not valid: %q", semverVersion)
+	}
+	if !semver.IsValid(semverMinVersion) {
+		return false, errors.Errorf("extracted min semver is not valid: %q", semverMinVersion)
+	}
+
+	return semver.Compare(semverVersion, semverMinVersion) >= 0, nil
+}
+
+// Extract the semantic version returned by MySQL VERSION().
+// Example value returned by VERSION(): 8.0.13-standard (<version>-<build>)
+var mySQLVerPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
+// MySQLSemVer extracts the semantic version numbers from a cluster's
+// reported version. Returns an error if no valid number was found.
+// Prefixes the semantic version number with a 'v' character.
+func MySQLSemVer(version string) (string, error) {
+	found := mySQLVerPattern.FindStringSubmatch(version)
+
+	if found == nil {
+		return "", errors.Errorf("Could not extract MySQL semantic version from %q", version)
+	}
+
+	return fmt.Sprintf("v%s", found[0]), nil
 }

@@ -1,7 +1,7 @@
 {{- /*gotype: github.com/cockroachdb/replicator/internal/target/apply.templates*/ -}}
 {{- /*
 This template implements the conditional update flow (compare-and-set,
-deadlines). For expanded examples, see the templates_test.go file.
+deadlines). For expanded examples, see the templates_test.go file, or apply/testdata/my/casDeadline.upsert.sql.
 Example:
 INSERT INTO tbl_4 (pk,ts,ver)
 WITH data AS (
@@ -11,7 +11,7 @@ deadlined AS (SELECT * from data WHERE ts > now() - INTERVAL 100000 second) ,
 current AS (
      SELECT pk, tbl_4.ver
      FROM tbl_4
-     JOIN deadlined
+JOIN deadlined
      USING (pk)),
 action AS (SELECT deadlined.* FROM deadlined
            LEFT JOIN current USING (pk)
@@ -109,3 +109,36 @@ ON DUPLICATE KEY UPDATE
 {{ template "valuelist" .Data }}
 {{- end -}}
 {{- /* Trim whitespace */ -}}
+
+{{- /* Helper templates. */ -}}
+
+{{- /* Produce SELECT, UNION SELECT statements to create a temporary table containing data rows to upsert.
+        Contains additional logic to handle columns with default expressions (which may or may not have
+        a value in a sparse source payload to use), user-configured expressions with the column substituted,
+        and geometry columns.
+        
+        Example template instance:
+        SELECT ?,?,?,3 * ?,CASE WHEN ? = 1 THEN ? ELSE expr() END
+        UNION SELECT ?,?,?,3 * ?,CASE WHEN ? = 1 THEN ? ELSE expr() END
+*/ -}}
+{{- define "cas-exprs" -}}
+    {{- range $groupIdx, $pairs := $.Vars -}}
+        {{- if $groupIdx }}{{- nl }}  UNION SELECT {{ end -}}
+        {{- range $pairIdx, $pair := $pairs -}}
+            {{- if $pairIdx -}},{{- end }}
+             {{- if $pair.ValidityParam -}}
+                CASE WHEN ? = 1 THEN {{- sp -}}
+              {{- end -}}
+            {{- if $pair.Expr -}}
+                ({{ $pair.Expr }})
+            {{- else if eq $pair.Column.Type "geometry" -}}
+                st_geomfromgeojson(?)
+            {{- else -}}
+               ?
+            {{- end -}}
+            {{- if $pair.ValidityParam -}}
+                {{- sp -}} ELSE {{ $pair.Column.DefaultExpr }} END
+            {{- end }}
+        {{- end -}}
+    {{- end -}}
+{{- end -}}

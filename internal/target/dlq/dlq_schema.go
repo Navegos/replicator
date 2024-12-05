@@ -61,6 +61,17 @@ source_logical INT8 NOT NULL,
 data_after JSON NOT NULL,
 data_before JSON NOT NULL
 )`
+	// Suggested schema to use for the older MySQL version 5.7
+	// that doesn't support expressions for default column values.
+	// Uses BIGINT UNSIGNED instead of UUID.
+	BasicMySQL5_7Schema = `CREATE TABLE %[1]s (
+event BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+dlq_name TEXT NOT NULL,
+source_nanos INT8 NOT NULL,
+source_logical INT8 NOT NULL,
+data_after JSON NOT NULL,
+data_before JSON NOT NULL
+)`
 	basicOraSchema = `CREATE TABLE %[1]s (
 event INTEGER GENERATED ALWAYS AS IDENTITY,
 dlq_name VARCHAR(256) NOT NULL,

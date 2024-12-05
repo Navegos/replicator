@@ -31,6 +31,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/util/applycfg"
 	"github.com/cockroachdb/replicator/internal/util/cmap"
 	"github.com/cockroachdb/replicator/internal/util/ident"
+	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -206,10 +207,28 @@ func newTemplates(mapping *columnMapping) (*templates, error) {
 		ret.upsert = tmplCRDB.Lookup("upsert.tmpl")
 		ret.tmpl = tmplCRDB
 
-	case types.ProductMariaDB, types.ProductMySQL:
+	case types.ProductMariaDB:
 		ret.conditional = tmplMy.Lookup("conditional.tmpl")
 		ret.delete = tmplMy.Lookup("delete.tmpl")
 		ret.upsert = tmplMy.Lookup("upsert.tmpl")
+		ret.tmpl = tmplMy
+
+	case types.ProductMySQL:
+		needsCompatQueries, err := stdpool.MySQLVersionNeedsCompatibilityQueries(mapping.DatabaseVersion)
+		if err != nil {
+			return nil, err
+		}
+
+		if needsCompatQueries {
+			// use queries that support older versions of MySQL.
+			ret.conditional = tmplMy.Lookup("conditional_compat.tmpl")
+			ret.delete = tmplMy.Lookup("delete_compat.tmpl")
+			ret.upsert = tmplMy.Lookup("upsert_compat.tmpl")
+		} else {
+			ret.conditional = tmplMy.Lookup("conditional.tmpl")
+			ret.delete = tmplMy.Lookup("delete.tmpl")
+			ret.upsert = tmplMy.Lookup("upsert.tmpl")
+		}
 		ret.tmpl = tmplMy
 
 	case types.ProductOracle:

@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/replicator/internal/types"
 	"github.com/cockroachdb/replicator/internal/util/ident"
 	"github.com/cockroachdb/replicator/internal/util/retry"
+	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/pkg/errors"
 )
 
@@ -210,6 +211,75 @@ ORDER BY ordered.ordinal_position, column_name
 `
 
 // Retrieve the primary key columns in their index-order.
+// Parameters in the order that they appear in the query:
+// - $1: Table schema ("my_database").
+// - $2: Table name ("my_table").
+// - $3: Same as $1.
+// - $4: Same as $2.
+// The current MySQL driver can't reuse the same placeholder argument multiple times
+// so we pass in the same argument twice as a compromise.
+//
+// This query wants the same result set as 'sqlColumnsQueryMySQL',
+// but does not use any common table expressions (CTEs), to support
+// older versions of MySQL like 5.7.
+const sqlColumnsQueryMySQLCompatibility = `
+SELECT
+    column_name,
+    pks.ordinal_position IS NOT NULL,
+    data_type,
+    column_default,
+    ignored
+FROM
+(
+    SELECT
+        column_name,
+
+        CASE
+        WHEN data_type in ('decimal','char','varchar')
+        THEN column_type
+        ELSE data_type
+        END as data_type,
+
+        column_type,
+
+        CASE
+        WHEN extra = 'DEFAULT_GENERATED'
+            OR data_type NOT in ('char','varchar', 'text')
+            OR column_default IS NULL
+        THEN column_default
+        ELSE quote (column_default)
+        END as column_default,
+
+        extra IN ('STORED GENERATED', 'VIRTUAL GENERATED') AS ignored
+    FROM information_schema.columns
+    WHERE table_schema = ?
+    AND table_name = ?
+) AS cols -- Get all columns for given table
+LEFT JOIN
+(
+    SELECT
+        column_name,
+        ordinal_position
+    FROM information_schema.key_column_usage
+    JOIN
+    (
+        SELECT
+            table_schema,
+            table_name,
+            constraint_name
+        FROM information_schema.table_constraints
+        WHERE constraint_type = 'PRIMARY KEY'
+        AND table_schema = ?
+        AND table_name = ?
+    ) AS pk_constraint -- pk constraint for given table
+    USING (table_schema, table_name, constraint_name)
+) AS pks -- Get all PK columns for given table
+USING (column_name)
+-- Order columns by index order ascending, NULL index orders are last so primary key columns are first.
+ORDER BY -pks.ordinal_position DESC, column_name
+`
+
+// Retrieve the primary key columns in their index-order.
 //
 // Parts of the CTE:
 // * atc: basic information about all columns
@@ -363,10 +433,32 @@ func getColumns(
 		if len(parts) != 2 {
 			return nil, errors.Errorf("expecting two table name parts, had %d", len(parts))
 		}
-		stmt = sqlColumnsQueryMySQL
-		args = []any{
-			parts[0].Raw(),
-			parts[1].Raw(),
+		tableSchema := parts[0].Raw()
+		tableName := parts[1].Raw()
+
+		needsCompatQueries, err := stdpool.MySQLVersionNeedsCompatibilityQueries(tx.Version)
+		if err != nil {
+			return nil, err
+		}
+
+		if needsCompatQueries {
+			// Support older versions of MySQL with unsupported query features (ex. CTEs).
+
+			// The current MySQL driver can't reuse the same placeholder argument multiple times
+			// in the query, so we pass in the same argument twice as a compromise.
+			stmt = sqlColumnsQueryMySQLCompatibility
+			args = []any{
+				tableSchema,
+				tableName,
+				tableSchema,
+				tableName,
+			}
+		} else {
+			stmt = sqlColumnsQueryMySQL
+			args = []any{
+				tableSchema,
+				tableName,
+			}
 		}
 	case types.ProductOracle:
 		parts := table.Idents(make([]ident.Ident, 0, 2))
@@ -392,7 +484,7 @@ func getColumns(
 
 		// Clear from previous loop.
 		columns = columns[:0]
-		foundPrimay := false
+		foundPrimary := false
 		for rows.Next() {
 			var column types.ColData
 			var defaultExpr sql.NullString
@@ -402,7 +494,7 @@ func getColumns(
 			}
 			column.Name = ident.New(name)
 			if column.Primary {
-				foundPrimay = true
+				foundPrimary = true
 			}
 			switch tx.Product {
 			case types.ProductCockroachDB, types.ProductPostgreSQL:
@@ -487,7 +579,7 @@ func getColumns(
 		// If there are no primary key columns, we know that a synthetic
 		// rowid column will exist. We'll create a new slice which
 		// respects the ordering guarantees.
-		if !foundPrimay {
+		if !foundPrimary {
 			rowID := ident.New("rowid")
 
 			next := make([]types.ColData, 1, len(columns)+1)

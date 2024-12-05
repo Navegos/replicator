@@ -38,6 +38,7 @@ type columnMapping struct {
 	Conditions           []types.ColData              // The version-like fields for CAS ops.
 	Columns              []types.ColData              // All columns named in an upsert statement.
 	Data                 []types.ColData              // Non-PK, non-ignored columns.
+	DatabaseVersion      string                       // Target database version. Useful to check for unsupported features.
 	Deadlines            types.Deadlines              // Allow too-old data to just be dropped.
 	DeleteParameterCount int                          // The number of SQL arguments.
 	Exprs                *ident.Map[string]           // Value-replacement expressions.
@@ -67,18 +68,20 @@ func newColumnMapping(
 	cfg *applycfg.Config,
 	cols []types.ColData,
 	product types.Product,
+	databaseVersion string,
 	table *ident.Hinted[ident.Table],
 ) (*columnMapping, error) {
 	ret := &columnMapping{
-		Conditions:   make([]types.ColData, len(cfg.CASColumns)),
-		Deadlines:    &ident.Map[time.Duration]{},
-		Exprs:        &ident.Map[string]{},
-		ExtrasColIdx: -1,
-		Positions:    &ident.Map[positionalColumn]{},
-		Product:      product,
-		Renames:      &ident.Map[ident.Ident]{},
-		RowLimit:     cfg.RowLimit,
-		TableName:    table,
+		Conditions:      make([]types.ColData, len(cfg.CASColumns)),
+		Deadlines:       &ident.Map[time.Duration]{},
+		Exprs:           &ident.Map[string]{},
+		ExtrasColIdx:    -1,
+		Positions:       &ident.Map[positionalColumn]{},
+		Product:         product,
+		DatabaseVersion: databaseVersion,
+		Renames:         &ident.Map[ident.Ident]{},
+		RowLimit:        cfg.RowLimit,
+		TableName:       table,
 	}
 
 	if ret.RowLimit <= 0 {

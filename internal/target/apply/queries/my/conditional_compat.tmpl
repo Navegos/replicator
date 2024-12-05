@@ -1,0 +1,102 @@
+{{- /*gotype: github.com/cockroachdb/replicator/internal/target/apply.templates*/ -}}
+{{- /*
+This template implements the conditional upsert flow (compare-and-set,
+deadlines), but does not use CTEs or other newer features to support older versions of MySQL (< 8.0.1).
+For expanded examples, see the templates_test.go file and apply/queries/testdata/*Compat.upsert.
+
+Example template instance:
+
+(1) INSERT
+    INTO "schema"."table" ("pk0","pk1","val0","val1","has_default")
+(2) SELECT * FROM (
+      SELECT ? AS "pk0",? AS "pk1",? AS "val0",? AS "val1",CASE WHEN ? = 1 THEN ? ELSE expr() END AS "has_default"
+      UNION SELECT ?,?,?,?,CASE WHEN ? = 1 THEN ? ELSE expr() END
+    ) AS data
+(3) LEFT JOIN (SELECT "pk0","pk1", "table"."val1","table"."val0" FROM "schema"."table") AS current ON ("pk0","pk1")
+(4) WHERE ("val0"> now() - INTERVAL '3600' SECOND)
+    AND ("val1"> now() - INTERVAL '1' SECOND)
+(5) AND (current."pk0" IS NULL OR
+        ((data."val1",data."val0") > (current."val1",current."val0")))
+(6) ON DUPLICATE KEY UPDATE
+    "val0"=VALUES("val0"),"val1"=VALUES("val1"),"has_default"=VALUES("has_default")
+
+VALUES(col_name) in the UPDATE clause refers to the value of col_name that would be inserted,
+had no duplicate-key conflict occurred.
+See also: https://dev.mysql.com/doc/refman/8.4/en/miscellaneous-functions.html#function_values
+*/ -}}
+
+{{- /* (1) Upsert the PK columns and data columns for the table. IGNORE if a PK-only table. */ -}}
+INSERT {{- if not .Data }} IGNORE {{ end }}
+INTO {{ .TableName }} ({{ template "names" .Columns }})
+
+{{- /* (2) Produce a temporary table containing the data we want to upsert, and SELECT from it. */}}
+SELECT {{ range $idx, $col := $.Columns }}
+        {{- if $idx -}},{{- end -}}
+        data.{{ $col.Name }}
+    {{- end -}}
+FROM (
+  SELECT {{ template "cas-exprs-compat" . }}
+) AS data
+{{- /* (3) Left join the pks to determine if the rows currently exist in
+            the table or not, also grab current version cols of row in the table. */}}
+{{- if .Conditions }}
+LEFT JOIN (SELECT {{ template "names" .PK }}, {{ template "join" (qualify .TableName .Conditions) }} FROM {{ .TableName -}}) AS current USING ({{ template "names" .PK }})
+{{- end }}
+
+{{- $deadlineEntries := deadlineEntries .Deadlines -}}
+{{- if or $deadlineEntries .Conditions -}}
+{{- /* (4) Filter out any data rows being upserted that are too old/stale, based on the given timestamp/deadline columns and current time. */}}
+WHERE {{- sp -}}
+{{- if $deadlineEntries -}}
+{{- range $entryIdx, $entry := $deadlineEntries -}}
+    {{- if $entryIdx -}} {{- nl -}} AND {{ end -}}
+    ( {{- $entry.Key -}} > now() - INTERVAL '{{- $entry.Value.Seconds -}}' SECOND)
+{{- end -}}
+{{- end -}}
+
+{{- if .Conditions -}}
+{{- /* (5) Filter out any data rows being upserted that already exist in the target table and and have
+            newer rows in the target table based on the given version columns. */}}
+{{- if $deadlineEntries -}} {{- nl -}} AND {{ end -}} (current.{{ (index .PK 0).Name }} IS NULL OR
+(( {{- template "join" (qualify "data" .Conditions) -}} ) > ( {{- template "join" (qualify "current" .Conditions) -}} )))
+{{- end -}}
+{{- end -}}
+
+{{- /* (6) If a row meets all the filter conditions (new enough from current time and it is newer than the one in the target table),
+            either insert it into the table or update the existing row (upsert). */}}
+{{- if .Data }}
+ON DUPLICATE KEY UPDATE
+{{ template "valuelist" .Data }}
+{{- end -}}
+
+{{- /* Helper templates. */ -}}
+
+{{- /* Similar to cas-exprs, but also adds column names to the first row of the
+        produced temporary table to support older DB versions like MySQL 5.7, which
+        can't name the columns outside of this query with a CTE.
+        
+        Example template instance:
+        SELECT ? AS "pk0",? AS "pk1",? AS "val0",3 * ? AS "val1",CASE WHEN ? = 1 THEN ? ELSE expr() END AS "has_default"
+        UNION SELECT ?,?,?,3 * ?,CASE WHEN ? = 1 THEN ? ELSE expr() END
+*/ -}}
+{{- define "cas-exprs-compat" -}}
+    {{- range $groupIdx, $pairs := $.Vars -}}
+        {{- if $groupIdx }}{{- nl }}  UNION SELECT {{ end -}}
+        {{- range $pairIdx, $pair := $pairs -}}
+            {{- if $pairIdx -}},{{- end }}
+             {{- if $pair.ValidityParam -}}
+                CASE WHEN ? = 1 THEN {{- sp -}}
+              {{- end -}}
+            {{- if $pair.Expr -}}
+                ({{ $pair.Expr }})
+            {{- else if eq $pair.Column.Type "geometry" -}}
+                st_geomfromgeojson(CAST(? as JSON))
+            {{- else -}}
+               ?
+            {{- end -}}
+            {{- if $pair.ValidityParam -}}
+                {{- sp -}} ELSE {{ $pair.Column.DefaultExpr }} END
+            {{- end -}} {{- if not $groupIdx }} AS {{ $pair.Column.Name -}} {{- end -}}
+        {{- end -}}
+    {{- end -}}
+{{- end -}}

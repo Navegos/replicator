@@ -44,11 +44,12 @@ import (
 
 // apply will upsert mutations and deletions into a target table.
 type apply struct {
-	cache   *types.TargetStatements
-	dlqs    types.DLQs
-	loader  *load.Loader
-	product types.Product
-	target  *ident.Hinted[ident.Table]
+	cache           *types.TargetStatements
+	databaseVersion string
+	dlqs            types.DLQs
+	loader          *load.Loader
+	product         types.Product
+	target          *ident.Hinted[ident.Table]
 
 	ages      prometheus.Observer
 	conflicts prometheus.Counter
@@ -91,11 +92,12 @@ func (f *factory) newApply(
 
 	labelValues := metrics.TableValues(target)
 	a := &apply{
-		cache:   f.cache,
-		dlqs:    f.dlqs,
-		loader:  f.loader,
-		product: poolInfo.Product,
-		target:  poolInfo.HintNoFTS(target),
+		cache:           f.cache,
+		dlqs:            f.dlqs,
+		loader:          f.loader,
+		product:         poolInfo.Product,
+		databaseVersion: poolInfo.Version,
+		target:          poolInfo.HintNoFTS(target),
 
 		ages:      applyMutationAge.WithLabelValues(labelValues...),
 		conflicts: applyConflicts.WithLabelValues(labelValues...),
@@ -698,7 +700,7 @@ func (a *apply) refreshUnlocked(configData *applycfg.Config, schemaData []types.
 	}
 
 	// Extract column metadata.
-	columnMapping, err := newColumnMapping(configData, schemaData, a.product, a.target)
+	columnMapping, err := newColumnMapping(configData, schemaData, a.product, a.databaseVersion, a.target)
 	if err != nil {
 		return err
 	}

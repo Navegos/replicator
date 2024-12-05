@@ -138,6 +138,16 @@ func TestGetDependencyRefs(t *testing.T) {
 	refs, err := getDependencyRefs(ctx, pool, schema)
 	r.NoError(err)
 
+	assertParentTableHasChildTable := func(parent ident.Table, expectedChild ident.Table) {
+		foundChildren := refs.GetZero(parent)
+		for _, foundChild := range foundChildren {
+			if ident.Equal(foundChild, expectedChild) {
+				return
+			}
+		}
+		a.Failf("Missing child table", "Expected %s as a child table of parent table %s", expectedChild, parent)
+	}
+
 	for _, tc := range tcs {
 		parent := ident.NewTable(schema, ident.New(tc.name))
 
@@ -147,7 +157,12 @@ func TestGetDependencyRefs(t *testing.T) {
 		}
 
 		foundChildren := refs.GetZero(parent)
-		a.Lenf(foundChildren, len(expectedChildren), "%s", parent)
+		a.Lenf(foundChildren, len(expectedChildren), "Unexpected number of child tables for parent table %s", parent)
+
+		// Ensure that the found children for the parent match the expected children.
+		for _, expectedChild := range expectedChildren {
+			assertParentTableHasChildTable(parent, expectedChild)
+		}
 	}
 
 	// Ensure that the database query doesn't fail if there is a

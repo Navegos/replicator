@@ -20,6 +20,7 @@ import (
 	"text/template"
 
 	"github.com/cockroachdb/replicator/internal/types"
+	"github.com/cockroachdb/replicator/internal/util/stdpool"
 	"github.com/google/wire"
 	"github.com/pkg/errors"
 )
@@ -47,7 +48,17 @@ func ProvideLoader(statements *types.TargetStatements, target *types.TargetPool)
 		// Minor syntax differences between MariaDB and MySQL.
 		l.selectTemplate = templates.Lookup("mariadb.tmpl")
 	case types.ProductMySQL:
-		l.selectTemplate = templates.Lookup("my.tmpl")
+		needsCompatQueries, err := stdpool.MySQLVersionNeedsCompatibilityQueries(target.Version)
+		if err != nil {
+			return nil, err
+		}
+
+		// MySQL version should at least support CTEs to use the my.tmpl query.
+		if needsCompatQueries {
+			l.selectTemplate = templates.Lookup("my_compat.tmpl")
+		} else {
+			l.selectTemplate = templates.Lookup("my.tmpl")
+		}
 	case types.ProductOracle:
 		l.selectTemplate = templates.Lookup("ora.tmpl")
 	default:

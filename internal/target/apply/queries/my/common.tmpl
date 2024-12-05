@@ -8,29 +8,6 @@
     {{- end -}}
 {{- end -}}
 
-
-{{- define "cas-exprs" -}}
-    {{- range $groupIdx, $pairs := $.Vars -}}
-        {{- if $groupIdx }}{{- nl }}  UNION SELECT {{ end -}}
-        {{- range $pairIdx, $pair := $pairs -}}
-            {{- if $pairIdx -}},{{- end }}
-             {{- if $pair.ValidityParam -}}
-                CASE WHEN ? = 1 THEN {{- sp -}}
-              {{- end -}}
-            {{- if $pair.Expr -}}
-                ({{ $pair.Expr }})
-            {{- else if eq $pair.Column.Type "geometry" -}}
-                st_geomfromgeojson(?)
-            {{- else -}}
-               ?
-            {{- end -}}
-            {{- if $pair.ValidityParam -}}
-                {{- sp -}} ELSE {{ $pair.Column.DefaultExpr }} END
-            {{- end }}
-        {{- end -}}
-    {{- end -}}
-{{- end -}}
-
 {{- define "exprs" -}}
     {{- range $groupIdx, $pairs := $.Vars -}}
         {{- if $groupIdx -}},{{- nl -}}{{- end -}}
@@ -44,6 +21,30 @@
                 ({{ $pair.Expr }})
             {{- else if eq $pair.Column.Type "geometry" -}}
                 st_geomfromgeojson(?)
+            {{- else -}}
+               ?
+            {{- end -}}
+            {{- if $pair.ValidityParam -}}
+                {{- sp -}} ELSE {{ $pair.Column.DefaultExpr }} END
+            {{- end -}}
+        {{- end -}}
+        )
+    {{- end -}}
+{{- end -}}
+
+{{- define "exprs-compat" -}}
+    {{- range $groupIdx, $pairs := $.Vars -}}
+        {{- if $groupIdx -}},{{- nl -}}{{- end -}}
+        (
+        {{- range $pairIdx, $pair := $pairs -}}
+            {{- if $pairIdx -}},{{- end -}}
+             {{- if $pair.ValidityParam -}}
+                CASE WHEN ? THEN {{- sp -}}
+              {{- end -}}
+            {{- if $pair.Expr -}}
+                ({{ $pair.Expr }})
+            {{- else if eq $pair.Column.Type "geometry" -}}
+                st_geomfromgeojson(CAST(? as JSON))
             {{- else -}}
                ?
             {{- end -}}

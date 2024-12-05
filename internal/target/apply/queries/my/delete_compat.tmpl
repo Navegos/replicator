@@ -1,0 +1,11 @@
+{{- /*gotype: github.com/cockroachdb/replicator/internal/target/apply.templates*/ -}}
+{{- /*
+DELETE FROM "database"."schema"."table"
+WHERE ("pk0","pk1") IN ((?,?), (...), ...)
+*/ -}}
+DELETE FROM {{ .TableName }}  WHERE (
+    {{- template "names" .PKDelete -}}
+)IN(
+    {{- template "exprs-compat" . -}}
+)
+{{- /* Trim whitespace */ -}}
