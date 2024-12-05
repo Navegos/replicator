@@ -119,11 +119,12 @@ jobs:
 
           for f in ${UPLOAD_PATHS//,/ }; do # Split comma-separated list
             echo "[$(basename $f)](https://replicator.cockroachdb.com/$f)" >> "$GITHUB_STEP_SUMMARY"
-            # Skip files that contain the string "latest"
-            if [[ "$f" == *"latest"* ]]; then
-                continue
+            TAG_REGEX="[0-9]+\.[0-9]+\.[0-9]+"
+            if [[ "$f" =~ $TAG_REGEX ]]; then
+              echo "output_${os}_${arch}_${target}=https://replicator.cockroachdb.com/$f" >> "$GITHUB_OUTPUT"
+            else
+              echo "skipping non-release version"
             fi
-            echo "output_${os}_${arch}_${target}=https://replicator.cockroachdb.com/$f" >> "$GITHUB_OUTPUT"
           done
         shell: bash
 
@@ -200,12 +201,6 @@ jobs:
             # Remove "edge/sha" from the link since we just want it
             # relative to the bucket for release versions.
             link=$(echo "$link" | sed 's|/edge/sha||')
-
-            # Skip links that contain the string "latest"
-            if [[ "$link" == *"latest"* ]]; then
-                continue
-            fi
-
             echo "$link" >> ./versions.txt
           done
 
