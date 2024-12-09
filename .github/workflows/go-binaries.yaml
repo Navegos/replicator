@@ -266,7 +266,7 @@ jobs:
           ./scripts/ci/replace-api-version.sh "${{steps.extract.outputs.tag}}"
       - name: Create Pull Request
         id: cpr
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.TOKEN_FOR_PRS }}
           commit-message: 'apiversion: bump version to ${{steps.extract.outputs.tag}}'
