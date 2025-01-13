@@ -5,7 +5,7 @@ go 1.23.0
 toolchain go1.23.1
 
 require (
-	github.com/IBM/sarama v1.44.0
+	github.com/IBM/sarama v1.45.0
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cockroachdb/apd v1.1.0
