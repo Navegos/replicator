@@ -228,11 +228,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # This uses a copy of the libraries stashed in our bucket.
+      # On newer versions of Ubuntu, libaio1 doesn't exist; rather only
+      # libaio1t64 exists and we need to symlink it.
       - name: Install Oracle Instant Client
         if: ${{ startsWith(matrix.target, 'oracle') }}
         run: |
           set -e
-          sudo apt-get install -yqq --no-install-recommends libaio1
+          sudo apt-get install -yqq --no-install-recommends libaio1t64
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
           curl -o /tmp/ora-libs.zip https://replicator.cockroachdb.com/third_party/instantclient-basiclite-linux-amd64.zip
           unzip -d /tmp /tmp/ora-libs.zip
           sudo mv /tmp/instantclient_21_13/* /usr/lib
