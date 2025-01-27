@@ -14,7 +14,7 @@ require (
 	github.com/cockroachdb/field-eng-powertools v0.0.0-20240829142217-c680a7021280
 	github.com/dop251/goja v0.0.0-20230919151941-fc55792775de
 	github.com/evanw/esbuild v0.24.2
-	github.com/go-mysql-org/go-mysql v1.10.0
+	github.com/go-mysql-org/go-mysql v1.11.0
 	github.com/godror/godror v0.45.2
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/golang-jwt/jwt/v4 v4.5.1
@@ -115,7 +115,6 @@ require (
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/sergi/go-diff v1.2.0 // indirect
 	github.com/shopspring/decimal v1.3.1 // indirect
-	github.com/siddontang/go v0.0.0-20180604090527-bdc77568d726 // indirect
 	github.com/siddontang/go-log v0.0.0-20190221022429-1e957dd83bed // indirect
 	github.com/src-d/gcfg v1.4.0 // indirect
 	github.com/xanzy/ssh-agent v0.2.1 // indirect
