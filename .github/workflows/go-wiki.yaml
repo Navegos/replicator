@@ -40,6 +40,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Print Current PR Sha
+        run: |
+          echo "current commit SHA: ${{ github.event.pull_request.head.sha }}"
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

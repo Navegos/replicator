@@ -51,6 +51,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Print Current PR Sha
+        run: |
+          echo "current commit SHA: ${{ github.event.pull_request.head.sha }}"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Extract the ref or tag from the GITHUB_REF

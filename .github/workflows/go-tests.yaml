@@ -34,6 +34,10 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
+      - name: Print Current PR Sha
+        run: |
+          echo "current commit SHA: ${{ github.event.pull_request.head.sha }}"
+
       - name: crlfmt returns no deltas
         if: ${{ !cancelled() }}
         run: |
@@ -218,6 +222,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
+
+      - name: Print Current PR Sha
+        run: |
+          echo "current commit SHA: ${{ github.event.pull_request.head.sha }}"
 
       # Ensure we can grab any private images we need for testing.
       - name: Log in to GitHub Package Registry

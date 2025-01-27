@@ -63,6 +63,10 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
+      - name: Print Current PR Sha
+        run: |
+          echo "current commit SHA: ${{ github.event.pull_request.head.sha }}"
+
       - name: Download modules
         run: go mod download
 
